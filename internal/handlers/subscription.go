@@ -6,7 +6,9 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
 	"github.com/ledgefice/internal/database"
+	"github.com/ledgefice/internal/middleware"
 	"github.com/ledgefice/internal/models"
 	"github.com/ledgefice/internal/services"
 )
@@ -52,6 +54,67 @@ func (h *SubscriptionHandler) Token(c *fiber.Ctx) error {
 		"card_type": sub.CardType,
 		"card_pan":  sub.CardPan,
 	})
+}
+
+// MyToken looks up the CURRENT logged-in org's saved card — the version you
+// want for an individual account, since the frontend won't have an old
+// order_reference lying around once the user is authenticated. Assumes
+// middleware.Protected sets "organization_id" in c.Locals — adjust the key
+// below if your JWT claims use a different name.
+func (h *SubscriptionHandler) MyToken(c *fiber.Ctx) error {
+	orgID := middleware.CurrentOrgID(c)
+	if orgID == uuid.Nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "missing organization context"})
+	}
+
+	var sub models.Subscription
+	if err := database.DB.
+		Where("organization_id = ? AND token_key IS NOT NULL AND token_key != ''", orgID).
+		Order("created_at DESC").
+		First(&sub).Error; err != nil {
+		return c.JSON(fiber.Map{
+			"has_token": false,
+			"message":   "no tokenized card saved for this organization yet",
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"has_token":       true,
+		"subscription_id": sub.ID,
+		"token_key":       sub.TokenKey,
+		"card_type":       sub.CardType,
+		"card_pan":        sub.CardPan,
+	})
+}
+
+// DeleteMyToken removes the org's saved card — both from Nomba's vault and
+// from the local subscription record, so renewals stop trying to charge it.
+func (h *SubscriptionHandler) DeleteMyToken(c *fiber.Ctx) error {
+	orgID := middleware.CurrentOrgID(c)
+	if orgID == uuid.Nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "missing organization context"})
+	}
+
+	var sub models.Subscription
+	if err := database.DB.
+		Where("organization_id = ? AND token_key IS NOT NULL AND token_key != ''", orgID).
+		Order("created_at DESC").
+		First(&sub).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "no saved card found"})
+	}
+
+	if err := h.Nomba.DeleteTokenizedCard(sub.TokenKey); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to delete card: " + err.Error()})
+	}
+
+	sub.TokenKey = ""
+	sub.CardType = ""
+	sub.CardPan = ""
+	if err := database.DB.Save(&sub).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "card deleted on Nomba but failed to clear local record"})
+	}
+
+	return c.JSON(fiber.Map{"message": "card removed"})
 }
 
 // ListTokens returns every subscription that has a saved tokenized card —
