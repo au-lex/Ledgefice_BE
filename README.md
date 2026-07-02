@@ -1,6 +1,6 @@
 # VMS Backend — Go Fiber + PostgreSQL
 
-Voucher Management System backend for Zenith Construction.
+Voucher Management System backend 
 
 ## Stack
 - **Go 1.22** + **Fiber v2** (HTTP)

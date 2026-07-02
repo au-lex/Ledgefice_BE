@@ -37,7 +37,7 @@ var PlanConfigs = map[PlanType]PlanConfig{
 		Name:           "Starter",
 		MaxDepartments: 3,
 		MaxUsers:       15,
-		MonthlyPrice:   1500000,
+		MonthlyPrice:   10000,
 		YearlyPrice:    1200000,
 		Features: PlanFeatures{
 			MultiStepApprovals:     false,
@@ -51,7 +51,7 @@ var PlanConfigs = map[PlanType]PlanConfig{
 		Name:           "Business",
 		MaxDepartments: 15,
 		MaxUsers:       150,
-		MonthlyPrice:   4500000,
+		MonthlyPrice:   1500,
 		YearlyPrice:    3600000,
 		Features: PlanFeatures{
 			MultiStepApprovals:     true,

@@ -3,8 +3,9 @@ package handlers
 import (
 	"crypto/hmac"
 	"crypto/sha256"
-	"encoding/hex"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"time"
 
@@ -19,33 +20,40 @@ type PaymentHandler struct {
 	Nomba *services.NombaService
 }
 
-// NombaCallback handles the browser redirect after checkout (set as order.callbackUrl).
-// This is for UX only — never trust it to confirm payment. The webhook below is the
-// source of truth. This just sends the customer somewhere sensible while the webhook
-// catches up in the background.
+// NombaCallback handles browser redirect
 func (h *PaymentHandler) NombaCallback(c *fiber.Ctx) error {
 	ref := c.Query("orderReference")
 	frontend := os.Getenv("FRONTEND_BASE_URL")
 
+	fmt.Println("🔥 CALLBACK HIT")
+	fmt.Println("Order Reference:", ref)
+
 	if ref == "" {
+		fmt.Println("❌ Missing orderReference")
 		return c.Redirect(frontend + "/payment/failed")
 	}
+
 	return c.Redirect(frontend + "/payment/pending?ref=" + ref)
 }
 
-// nombaWebhookPayload mirrors the payload Nomba sends to the webhook URL
-// configured in the dashboard (Settings > Webhooks) — separate from the
-// per-order callbackUrl.
 type nombaWebhookPayload struct {
 	EventType string `json:"event_type"`
 	RequestID string `json:"requestId"`
-	Data      struct {
+
+	Data struct {
+		Merchant struct {
+			UserID   string `json:"userId"`
+			WalletID string `json:"walletId"`
+		} `json:"merchant"`
+
 		Transaction struct {
 			TransactionID     string  `json:"transactionId"`
 			Type              string  `json:"type"`
 			TransactionAmount float64 `json:"transactionAmount"`
 			Time              string  `json:"time"`
+			ResponseCode      string  `json:"responseCode"`
 		} `json:"transaction"`
+
 		Order struct {
 			OrderID        string  `json:"orderId"`
 			Amount         float64 `json:"amount"`
@@ -57,74 +65,164 @@ type nombaWebhookPayload struct {
 	} `json:"data"`
 }
 
-// NombaWebhook handles the server-to-server webhook configured in the Nomba dashboard.
-// Verifies the "nomba-signature" header (HMAC-SHA256 over the raw body using
-// NOMBA_WEBHOOK_SECRET) and de-dupes via requestId before applying any state change,
-// since webhooks may fire more than once for the same event.
 func (h *PaymentHandler) NombaWebhook(c *fiber.Ctx) error {
+
+	fmt.Println("\n🔥🔥🔥 NOMBA WEBHOOK RECEIVED 🔥🔥🔥")
+
 	rawBody := c.Body()
 
+	fmt.Println("BODY:")
+	fmt.Println(string(rawBody))
+
 	signature := c.Get("nomba-signature")
+	timestamp := c.Get("nomba-timestamp")
+
+	fmt.Println("HEADERS:")
+	fmt.Println("signature:", signature)
+	fmt.Println("algorithm:", c.Get("nomba-signature-algorithm"))
+	fmt.Println("version:", c.Get("nomba-signature-version"))
+	fmt.Println("timestamp:", timestamp)
+
 	if signature == "" {
-		return c.Status(fiber.StatusUnauthorized).SendString("missing signature")
+		fmt.Println("❌ Missing signature")
+		return c.Status(401).SendString("missing signature")
 	}
 
-	secret := os.Getenv("NOMBA_WEBHOOK_SECRET")
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write(rawBody)
-	expected := hex.EncodeToString(mac.Sum(nil))
-
-	if !hmac.Equal([]byte(signature), []byte(expected)) {
-		return c.Status(fiber.StatusUnauthorized).SendString("bad signature")
+	if timestamp == "" {
+		fmt.Println("❌ Missing timestamp")
+		return c.Status(401).SendString("missing timestamp")
 	}
 
 	var payload nombaWebhookPayload
+
 	if err := json.Unmarshal(rawBody, &payload); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid payload"})
+		fmt.Println("❌ JSON ERROR:", err)
+		return c.Status(400).JSON(fiber.Map{"error": "invalid payload"})
 	}
 
-	// Idempotency: only process each requestId once. If the insert fails on the
-	// unique constraint, we've already handled this event — ack and stop.
-	event := models.WebhookEvent{RequestID: payload.RequestID, EventType: payload.EventType}
+	responseCode := payload.Data.Transaction.ResponseCode
+	if responseCode == "null" {
+		responseCode = ""
+	}
+
+	// --- per-field debug dump, so you can see exactly which field is wrong/empty ---
+	fmt.Println("---- SIGNATURE FIELDS ----")
+	fmt.Printf("event_type:      %q\n", payload.EventType)
+	fmt.Printf("requestId:       %q\n", payload.RequestID)
+	fmt.Printf("merchant.userId: %q\n", payload.Data.Merchant.UserID)
+	fmt.Printf("merchant.walletId:%q\n", payload.Data.Merchant.WalletID)
+	fmt.Printf("transactionId:   %q\n", payload.Data.Transaction.TransactionID)
+	fmt.Printf("type:            %q\n", payload.Data.Transaction.Type)
+	fmt.Printf("time:            %q\n", payload.Data.Transaction.Time)
+	fmt.Printf("responseCode:    %q\n", responseCode)
+	fmt.Printf("timestamp(hdr):  %q\n", timestamp)
+	fmt.Println("--------------------------")
+
+	signedString := fmt.Sprintf(
+		"%s:%s:%s:%s:%s:%s:%s:%s:%s",
+		payload.EventType,
+		payload.RequestID,
+		payload.Data.Merchant.UserID,
+		payload.Data.Merchant.WalletID,
+		payload.Data.Transaction.TransactionID,
+		payload.Data.Transaction.Type,
+		payload.Data.Transaction.Time,
+		responseCode,
+		timestamp,
+	)
+
+	secret := os.Getenv("NOMBA_WEBHOOK_SECRET")
+	fmt.Println("SECRET EXISTS:", secret != "")
+	fmt.Println("SIGNED STRING:", signedString)
+
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(signedString))
+	expected := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+	fmt.Println("EXPECTED SIGNATURE:", expected)
+	fmt.Println("RECEIVED SIGNATURE:", signature)
+
+	if !hmac.Equal([]byte(signature), []byte(expected)) {
+		fmt.Println("❌ BAD SIGNATURE")
+		return c.Status(401).SendString("bad signature")
+	}
+
+	fmt.Println("✅ SIGNATURE VERIFIED")
+
+	fmt.Println("EVENT:", payload.EventType)
+	fmt.Println("REQUEST ID:", payload.RequestID)
+	fmt.Println("ORDER REF:", payload.Data.Order.OrderReference)
+
+	event := models.WebhookEvent{
+		RequestID: payload.RequestID,
+		EventType: payload.EventType,
+	}
+
 	if err := database.DB.Create(&event).Error; err != nil {
-		return c.SendStatus(fiber.StatusOK) // duplicate delivery, already processed
+		fmt.Println("⚠️ Duplicate webhook")
+		return c.SendStatus(200)
 	}
 
 	ref := payload.Data.Order.OrderReference
+
 	if ref == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "missing orderReference"})
+		fmt.Println("❌ Missing order reference")
+		return c.Status(400).JSON(fiber.Map{"error": "missing orderReference"})
 	}
 
 	var sub models.Subscription
-	if err := database.DB.Where("order_reference = ?", ref).First(&sub).Error; err != nil {
+
+	err := database.DB.
+		Where("order_reference = ?", ref).
+		First(&sub).
+		Error
+
+	if err != nil {
 		if err == gorm.ErrRecordNotFound {
-			// Unknown order reference — ack anyway so Nomba doesn't retry forever.
-			return c.SendStatus(fiber.StatusOK)
+			fmt.Println("❌ Subscription not found:", ref)
+			return c.SendStatus(200)
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "lookup failed"})
+		fmt.Println("DB ERROR:", err)
+		return c.SendStatus(500)
 	}
 
+	fmt.Println("SUB FOUND:", sub.ID)
+
 	switch payload.EventType {
+
 	case "payment_success":
+		fmt.Println("💰 PAYMENT SUCCESS")
+
 		now := time.Now()
 		sub.Status = models.SubscriptionStatusPaid
 		sub.PaidAt = &now
+
 		if err := database.DB.Save(&sub).Error; err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to update subscription"})
+			fmt.Println("❌ UPDATE FAILED:", err)
+			return c.SendStatus(500)
 		}
 
-		// Pull the tokenized card so future renewals can charge it directly.
-		if cards, err := h.Nomba.GetSavedCards(ref); err == nil && len(cards) > 0 {
+		fmt.Println("✅ SUBSCRIPTION UPDATED TO PAID")
+
+		cards, err := h.Nomba.GetSavedCards(ref)
+
+		if err != nil {
+			fmt.Println("Token fetch failed:", err)
+		} else if len(cards) > 0 {
 			sub.TokenKey = cards[0].TokenKey
 			sub.CardType = cards[0].CardType
 			sub.CardPan = cards[0].CardPan
 			database.DB.Save(&sub)
+			fmt.Println("✅ CARD TOKEN SAVED")
 		}
 
 	case "payment_failed":
+		fmt.Println("❌ PAYMENT FAILED")
 		sub.Status = models.SubscriptionStatusFailed
 		database.DB.Save(&sub)
 	}
 
-	return c.SendStatus(fiber.StatusOK)
+	fmt.Println("🔥 WEBHOOK COMPLETED")
+
+	return c.SendStatus(200)
 }

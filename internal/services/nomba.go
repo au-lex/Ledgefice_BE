@@ -14,7 +14,8 @@ type NombaService struct {
 	BaseURL      string
 	ClientID     string
 	ClientSecret string
-	AccountID    string
+	AccountID    string // parent account — goes in the accountId HEADER
+	SubAccountID string // sub-account — goes inside order.accountId in the BODY
 
 	token       string
 	tokenExpiry time.Time
@@ -23,10 +24,11 @@ type NombaService struct {
 
 func NewNombaService() *NombaService {
 	return &NombaService{
-		BaseURL:      os.Getenv("NOMBA_BASE_URL"), 
+		BaseURL:      os.Getenv("NOMBA_BASE_URL"),
 		ClientID:     os.Getenv("NOMBA_CLIENT_ID"),
 		ClientSecret: os.Getenv("NOMBA_CLIENT_SECRET"),
 		AccountID:    os.Getenv("NOMBA_ACCOUNT_ID"),
+		SubAccountID: os.Getenv("NOMBA_SUBACCOUNT_ID"),
 	}
 }
 
@@ -99,14 +101,19 @@ func (n *NombaService) CreateCheckoutOrder(in CheckoutOrderInput) (*CheckoutOrde
 		return nil, err
 	}
 
+	order := map[string]any{
+		"orderReference": in.OrderReference,
+		"customerEmail":  in.CustomerEmail,
+		"amount":         in.Amount,
+		"currency":       in.Currency,
+		"callbackUrl":    in.CallbackURL,
+	}
+	if n.SubAccountID != "" {
+		order["accountId"] = n.SubAccountID
+	}
+
 	payload := map[string]any{
-		"order": map[string]any{
-			"orderReference": in.OrderReference,
-			"customerEmail":  in.CustomerEmail,
-			"amount":         in.Amount,
-			"currency":       in.Currency,
-			"callbackUrl":    in.CallbackURL,
-		},
+		"order":        order,
 		"tokenizeCard": in.TokenizeCard,
 	}
 	body, _ := json.Marshal(payload)
@@ -116,7 +123,7 @@ func (n *NombaService) CreateCheckoutOrder(in CheckoutOrderInput) (*CheckoutOrde
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("accountId", n.AccountID)
+	req.Header.Set("accountId", n.AccountID) // parent account ID — auth scope, not the sub-account
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -160,14 +167,19 @@ func (n *NombaService) ChargeTokenizedCard(in TokenizedChargeInput) (*TokenizedC
 		return nil, err
 	}
 
+	order := map[string]any{
+		"orderReference": in.OrderReference,
+		"customerEmail":  in.CustomerEmail,
+		"amount":         in.Amount,
+		"currency":       in.Currency,
+		"callbackUrl":    in.CallbackURL,
+	}
+	if n.SubAccountID != "" {
+		order["accountId"] = n.SubAccountID
+	}
+
 	payload := map[string]any{
-		"order": map[string]any{
-			"orderReference": in.OrderReference,
-			"customerEmail":  in.CustomerEmail,
-			"amount":         in.Amount,
-			"currency":       in.Currency,
-			"callbackUrl":    in.CallbackURL,
-		},
+		"order":    order,
 		"tokenKey": in.TokenKey,
 	}
 	body, _ := json.Marshal(payload)
@@ -199,13 +211,40 @@ func (n *NombaService) ChargeTokenizedCard(in TokenizedChargeInput) (*TokenizedC
 	return &out.Data, nil
 }
 
+// ─── Delete a tokenized card (customer wants their saved card removed) ───────
+
+func (n *NombaService) DeleteTokenizedCard(tokenKey string) error {
+	token, err := n.getToken()
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequest("DELETE", n.BaseURL+"/v1/checkout/tokenized-card-data/"+tokenKey, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("accountId", n.AccountID)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("nomba delete tokenized card failed: status %d", resp.StatusCode)
+	}
+	return nil
+}
+
 // ─── Get saved cards for a customer (after order + tokenization) ─────────────
 
 type TokenizedCard struct {
-	TokenKey           string `json:"tokenKey"`
-	CustomerEmail      string `json:"customerEmail"`
-	CardType           string `json:"cardType"`
-	CardPan            string `json:"cardPan"`
+	TokenKey            string `json:"tokenKey"`
+	CustomerEmail       string `json:"customerEmail"`
+	CardType            string `json:"cardType"`
+	CardPan             string `json:"cardPan"`
 	TokenExpirationDate string `json:"tokenExpirationDate"`
 }
 

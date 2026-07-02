@@ -35,12 +35,21 @@ func RegisterRoutes(app *fiber.App, jwtSecret string, imgSvc *services.ImageServ
 	// onboarding owner isn't logged in yet when checking these.
 	subs := &handlers.SubscriptionHandler{Nomba: nombaSvc}
 	api.Get("/subscriptions/:ref/status", subs.Status)
-	api.Get("/subscriptions/:ref/token", subs.Token)
 
 	// ─── Protected ──────────────────────────────────────────────────────────
 	guard := middleware.Protected(jwtSecret)
 
 	api.Get("/auth/me", guard, auth.Me)
+
+	// Logged-in org's own saved card — lookup + delete. Registered BEFORE the
+	// /:ref/token route below, since Fiber matches route patterns in
+	// registration order when they overlap ("me" would otherwise be swallowed
+	// by the :ref wildcard and never reach these handlers).
+	api.Get("/subscriptions/me/token", guard, subs.MyToken)
+	api.Delete("/subscriptions/me/token", guard, subs.DeleteMyToken)
+
+	// order_reference-based lookup — must come AFTER /me/token above.
+	api.Get("/subscriptions/:ref/token", subs.Token)
 
 	// Renew a subscription using its saved tokenized card — manual trigger for
 	// now, requires login since it's a real charge against an existing org.
