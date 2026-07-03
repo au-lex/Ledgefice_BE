@@ -26,6 +26,19 @@ const (
 	UserStatusBlocked   UserStatus = "blocked"
 )
 
+type PendingSignup struct {
+	Base
+	OrganizationName string   `gorm:"not null" json:"organization_name"`
+	Email            string   `gorm:"uniqueIndex;not null" json:"email"`
+	PasswordHash     string   `gorm:"not null" json:"-"`
+	LogoURL          string   `json:"logo_url"`
+	NumberOfWorkers  int      `json:"number_of_workers"`
+	Plan             PlanType `gorm:"type:varchar(20);not null" json:"plan"`
+	OrderReference   string   `gorm:"uniqueIndex;not null" json:"order_reference"`
+	Amount           float64  `json:"amount"`
+	Currency         string   `gorm:"type:varchar(3);default:'NGN'" json:"currency"`
+}
+
 type User struct {
 	Base
 	OrganizationID uuid.UUID     `gorm:"type:uuid;not null;index" json:"organization_id"`

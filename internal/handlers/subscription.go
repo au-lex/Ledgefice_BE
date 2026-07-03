@@ -19,15 +19,38 @@ type SubscriptionHandler struct {
 
 // Status is a public endpoint — the onboarding owner isn't logged in yet
 // when polling this, so no auth guard.
+// Status is polled by the frontend after checkout redirect. Account creation
+// is now deferred until payment_success (see PaymentHandler.NombaWebhook), so
+// there are three possible states here, not two:
+//   - No Subscription AND no PendingSignup found → genuinely invalid ref (404)
+//   - No Subscription but a PendingSignup exists → still waiting on payment;
+//     the account doesn't exist yet, report "awaiting_payment"
+//   - Subscription exists → normal status (pending/paid/failed), and once
+//     paid, organization_id/owner_id are included so the frontend can move
+//     on to login instead of just showing a generic "success" screen.
 func (h *SubscriptionHandler) Status(c *fiber.Ctx) error {
 	ref := c.Params("ref")
 
 	var sub models.Subscription
-	if err := database.DB.Where("order_reference = ?", ref).First(&sub).Error; err != nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "subscription not found"})
+	if err := database.DB.Where("order_reference = ?", ref).First(&sub).Error; err == nil {
+		resp := fiber.Map{"status": string(sub.Status)}
+		if sub.Status == models.SubscriptionStatusPaid {
+			resp["organization_id"] = sub.OrganizationID
+
+			var org models.Organization
+			if err := database.DB.Where("id = ?", sub.OrganizationID).First(&org).Error; err == nil && org.OwnerID != nil {
+				resp["owner_id"] = *org.OwnerID
+			}
+		}
+		return c.JSON(resp)
 	}
 
-	return c.JSON(fiber.Map{"status": string(sub.Status)})
+	var pending models.PendingSignup
+	if err := database.DB.Where("order_reference = ?", ref).First(&pending).Error; err == nil {
+		return c.JSON(fiber.Map{"status": "awaiting_payment"})
+	}
+
+	return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "subscription not found"})
 }
 
 // Token returns the saved tokenized card details for a subscription, so you can
@@ -117,6 +140,53 @@ func (h *SubscriptionHandler) DeleteMyToken(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"message": "card removed"})
 }
 
+// MyLiveToken queries Nomba directly (not the local DB) for the logged-in org
+// owner's tokenized card — use this right before showing a "cancel subscription /
+// remove card" screen, so the user sees the real current state even if the local
+// DB drifted out of sync with Nomba's vault.
+func (h *SubscriptionHandler) MyLiveToken(c *fiber.Ctx) error {
+	orgID := middleware.CurrentOrgID(c)
+	if orgID == uuid.Nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "missing organization context"})
+	}
+
+	var org models.Organization
+	if err := database.DB.Where("id = ?", orgID).First(&org).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "organization not found"})
+	}
+
+	var owner models.User
+	if err := database.DB.Where("id = ?", *org.OwnerID).First(&owner).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "owner not found"})
+	}
+
+	cards, err := h.Nomba.GetSavedCards(owner.Email)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to fetch card from Nomba: " + err.Error()})
+	}
+
+	if len(cards) == 0 {
+		return c.JSON(fiber.Map{
+			"has_token": false,
+			"message":   "no tokenized card found on Nomba for this account",
+		})
+	}
+
+	out := make([]fiber.Map, 0, len(cards))
+	for _, card := range cards {
+		out = append(out, fiber.Map{
+			"token_key": card.TokenKey,
+			"card_type": card.CardType,
+			"card_pan":  card.CardPan,
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"has_token": true,
+		"cards":     out,
+	})
+}
+
 // ListTokens returns every subscription that has a saved tokenized card —
 // useful for an admin view or just confirming tokens are landing correctly.
 func (h *SubscriptionHandler) ListTokens(c *fiber.Ctx) error {
@@ -149,6 +219,9 @@ func (h *SubscriptionHandler) ListTokens(c *fiber.Ctx) error {
 // Renew charges the previously tokenized card for a new billing cycle, using the
 // org's existing Subscription record. Triggered manually for now — wire this into
 // a cron job once you're ready to automate monthly renewals.
+// Renew handles both renewal paths: tokenized card (instant, webhook confirms
+// async) and Direct Debit mandate (DebitMandate call itself returns the final
+// status synchronously — no webhook involved for this path, per Nomba's docs).
 func (h *SubscriptionHandler) Renew(c *fiber.Ctx) error {
 	id := c.Params("id") // subscription UUID
 
@@ -157,8 +230,8 @@ func (h *SubscriptionHandler) Renew(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "subscription not found"})
 	}
 
-	if sub.TokenKey == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "no tokenized card saved for this subscription"})
+	if sub.TokenKey == "" && sub.MandateID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "no tokenized card or active mandate saved for this subscription"})
 	}
 
 	var org models.Organization
@@ -171,6 +244,48 @@ func (h *SubscriptionHandler) Renew(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "owner not found"})
 	}
 
+	// ─── Mandate path ────────────────────────────────────────────────────────
+	if sub.TokenKey == "" && sub.MandateID != "" {
+		result, err := h.Nomba.DebitMandate(sub.MandateID, sub.Amount)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "mandate debit failed: " + err.Error()})
+		}
+
+		newOrderRef := fmt.Sprintf("renew_%s_%d", sub.OrganizationID.String()[:8], time.Now().Unix())
+		status := models.SubscriptionStatusPending
+		var paidAt *time.Time
+		if result.Status == "SUCCESS" {
+			status = models.SubscriptionStatusPaid
+			now := time.Now()
+			paidAt = &now
+		} else {
+			status = models.SubscriptionStatusFailed
+		}
+
+		newSub := models.Subscription{
+			OrganizationID:  sub.OrganizationID,
+			Plan:            sub.Plan,
+			Amount:          sub.Amount,
+			Currency:        sub.Currency,
+			OrderReference:  newOrderRef,
+			Status:          status,
+			PaidAt:          paidAt,
+			MandateID:       sub.MandateID,
+			MandateStatus:   sub.MandateStatus,
+			MandateBankCode: sub.MandateBankCode,
+		}
+		if err := database.DB.Create(&newSub).Error; err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to record renewal"})
+		}
+
+		return c.JSON(fiber.Map{
+			"order_reference": newOrderRef,
+			"charge_status":   result.Status,
+			"charge_message":  result.Message,
+		})
+	}
+
+	// ─── Tokenized card path ─────────────────────────────────────────────────
 	newOrderRef := fmt.Sprintf("renew_%s_%d", sub.OrganizationID.String()[:8], time.Now().Unix())
 
 	result, err := h.Nomba.ChargeTokenizedCard(services.TokenizedChargeInput{

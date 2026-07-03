@@ -65,6 +65,8 @@ type nombaWebhookPayload struct {
 	} `json:"data"`
 }
 
+// NombaWebhook handles server-to-server webhook from Nomba
+
 func (h *PaymentHandler) NombaWebhook(c *fiber.Ctx) error {
 
 	fmt.Println("\n🔥🔥🔥 NOMBA WEBHOOK RECEIVED 🔥🔥🔥")
@@ -105,19 +107,6 @@ func (h *PaymentHandler) NombaWebhook(c *fiber.Ctx) error {
 		responseCode = ""
 	}
 
-	// --- per-field debug dump, so you can see exactly which field is wrong/empty ---
-	fmt.Println("---- SIGNATURE FIELDS ----")
-	fmt.Printf("event_type:      %q\n", payload.EventType)
-	fmt.Printf("requestId:       %q\n", payload.RequestID)
-	fmt.Printf("merchant.userId: %q\n", payload.Data.Merchant.UserID)
-	fmt.Printf("merchant.walletId:%q\n", payload.Data.Merchant.WalletID)
-	fmt.Printf("transactionId:   %q\n", payload.Data.Transaction.TransactionID)
-	fmt.Printf("type:            %q\n", payload.Data.Transaction.Type)
-	fmt.Printf("time:            %q\n", payload.Data.Transaction.Time)
-	fmt.Printf("responseCode:    %q\n", responseCode)
-	fmt.Printf("timestamp(hdr):  %q\n", timestamp)
-	fmt.Println("--------------------------")
-
 	signedString := fmt.Sprintf(
 		"%s:%s:%s:%s:%s:%s:%s:%s:%s",
 		payload.EventType,
@@ -132,15 +121,9 @@ func (h *PaymentHandler) NombaWebhook(c *fiber.Ctx) error {
 	)
 
 	secret := os.Getenv("NOMBA_WEBHOOK_SECRET")
-	fmt.Println("SECRET EXISTS:", secret != "")
-	fmt.Println("SIGNED STRING:", signedString)
-
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(signedString))
 	expected := base64.StdEncoding.EncodeToString(mac.Sum(nil))
-
-	fmt.Println("EXPECTED SIGNATURE:", expected)
-	fmt.Println("RECEIVED SIGNATURE:", signature)
 
 	if !hmac.Equal([]byte(signature), []byte(expected)) {
 		fmt.Println("❌ BAD SIGNATURE")
@@ -148,7 +131,6 @@ func (h *PaymentHandler) NombaWebhook(c *fiber.Ctx) error {
 	}
 
 	fmt.Println("✅ SIGNATURE VERIFIED")
-
 	fmt.Println("EVENT:", payload.EventType)
 	fmt.Println("REQUEST ID:", payload.RequestID)
 	fmt.Println("ORDER REF:", payload.Data.Order.OrderReference)
@@ -170,23 +152,53 @@ func (h *PaymentHandler) NombaWebhook(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "missing orderReference"})
 	}
 
+	// ─── Look up an existing Subscription first (renewal path — org already
+	// exists in this case, since Renew() only runs for existing orgs) ────────
 	var sub models.Subscription
+	err := database.DB.Where("order_reference = ?", ref).First(&sub).Error
 
-	err := database.DB.
-		Where("order_reference = ?", ref).
-		First(&sub).
-		Error
-
-	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			fmt.Println("❌ Subscription not found:", ref)
-			return c.SendStatus(200)
-		}
+	if err != nil && err != gorm.ErrRecordNotFound {
 		fmt.Println("DB ERROR:", err)
 		return c.SendStatus(500)
 	}
 
-	fmt.Println("SUB FOUND:", sub.ID)
+	subFound := err == nil
+
+	// ─── No existing Subscription — check for a PendingSignup instead. This is
+	// the first-time-signup path: the account doesn't exist yet, and only gets
+	// created here, now that payment_success has actually been confirmed. ────
+	if !subFound {
+		if payload.EventType != "payment_success" {
+			// A payment_failed webhook for a signup that never completed just
+			// means the pending signup stays pending — nothing to clean up
+			// here (it'll simply never convert to a real account).
+			fmt.Println("ℹ️ No subscription found and event is not payment_success — nothing to do")
+			return c.SendStatus(200)
+		}
+
+		var pending models.PendingSignup
+		if err := database.DB.Where("order_reference = ?", ref).First(&pending).Error; err != nil {
+			fmt.Println("❌ No subscription or pending signup found for order_reference:", ref)
+			return c.SendStatus(200)
+		}
+
+		fmt.Println("🆕 PENDING SIGNUP FOUND — creating account now that payment is confirmed:", pending.OrganizationName)
+
+		createdSub, err := createAccountFromPendingSignup(pending)
+		if err != nil {
+			// The customer HAS paid at this point — this failure needs manual
+			// follow-up (e.g. org name collided with one created in the
+			// meantime). Don't silently swallow this; it needs a real alert
+			// in production, not just a log line.
+			fmt.Println("❌ FAILED TO CREATE ACCOUNT FROM PENDING SIGNUP:", err)
+			return c.SendStatus(500)
+		}
+
+		sub = *createdSub
+		fmt.Println("✅ ACCOUNT CREATED — organization_id:", sub.OrganizationID)
+	}
+
+	fmt.Println("SUB FOUND/CREATED:", sub.ID)
 
 	switch payload.EventType {
 
@@ -197,6 +209,13 @@ func (h *PaymentHandler) NombaWebhook(c *fiber.Ctx) error {
 		sub.Status = models.SubscriptionStatusPaid
 		sub.PaidAt = &now
 
+		nextRenewal := now.AddDate(0, 1, 0)
+		sub.RenewsAt = &nextRenewal
+		sub.RetryCount = 0
+		sub.NextRetryAt = nil
+		sub.DunningStage = ""
+		sub.LastRetryError = ""
+
 		if err := database.DB.Save(&sub).Error; err != nil {
 			fmt.Println("❌ UPDATE FAILED:", err)
 			return c.SendStatus(500)
@@ -204,16 +223,20 @@ func (h *PaymentHandler) NombaWebhook(c *fiber.Ctx) error {
 
 		fmt.Println("✅ SUBSCRIPTION UPDATED TO PAID")
 
-		cards, err := h.Nomba.GetSavedCards(ref)
+		if payload.Data.Order.PaymentMethod == "bank_transfer" {
+			fmt.Println("ℹ️ bank_transfer payment — no card to tokenize, skipping card fetch")
+		} else {
+			cards, err := h.Nomba.GetSavedCards(payload.Data.Order.CustomerEmail)
 
-		if err != nil {
-			fmt.Println("Token fetch failed:", err)
-		} else if len(cards) > 0 {
-			sub.TokenKey = cards[0].TokenKey
-			sub.CardType = cards[0].CardType
-			sub.CardPan = cards[0].CardPan
-			database.DB.Save(&sub)
-			fmt.Println("✅ CARD TOKEN SAVED")
+			if err != nil {
+				fmt.Println("Token fetch failed:", err)
+			} else if len(cards) > 0 {
+				sub.TokenKey = cards[0].TokenKey
+				sub.CardType = cards[0].CardType
+				sub.CardPan = cards[0].CardPan
+				database.DB.Save(&sub)
+				fmt.Println("✅ CARD TOKEN SAVED")
+			}
 		}
 
 	case "payment_failed":
@@ -225,4 +248,82 @@ func (h *PaymentHandler) NombaWebhook(c *fiber.Ctx) error {
 	fmt.Println("🔥 WEBHOOK COMPLETED")
 
 	return c.SendStatus(200)
+}
+
+func createAccountFromPendingSignup(pending models.PendingSignup) (*models.Subscription, error) {
+	tx := database.DB.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	org := models.Organization{
+		Name:            pending.OrganizationName,
+		LogoURL:         pending.LogoURL,
+		NumberOfWorkers: pending.NumberOfWorkers,
+		Plan:            pending.Plan,
+	}
+	if err := tx.Create(&org).Error; err != nil {
+		tx.Rollback()
+		return nil, fmt.Errorf("organization name already exists or failed to create: %w", err)
+	}
+
+	owner := models.User{
+		OrganizationID: org.ID,
+		Name:           pending.OrganizationName + " Admin",
+		Email:          pending.Email,
+		Password:       pending.PasswordHash,
+		Status:         models.UserStatusActive,
+	}
+	if err := tx.Create(&owner).Error; err != nil {
+		tx.Rollback()
+		return nil, fmt.Errorf("failed to create owner user: %w", err)
+	}
+
+	org.OwnerID = &owner.ID
+	if err := tx.Save(&org).Error; err != nil {
+		tx.Rollback()
+		return nil, fmt.Errorf("failed to link owner to org: %w", err)
+	}
+
+	ownerDept := models.Department{
+		OrganizationID: org.ID,
+		Name:           "Owner",
+		Permissions:    models.FullPermissions(),
+	}
+	if err := tx.Create(&ownerDept).Error; err != nil {
+		tx.Rollback()
+		return nil, fmt.Errorf("failed to create owner department: %w", err)
+	}
+
+	owner.DepartmentID = &ownerDept.ID
+	if err := tx.Save(&owner).Error; err != nil {
+		tx.Rollback()
+		return nil, fmt.Errorf("failed to assign owner department: %w", err)
+	}
+
+	sub := models.Subscription{
+		OrganizationID: org.ID,
+		Plan:           pending.Plan,
+		Amount:         pending.Amount,
+		Currency:       pending.Currency,
+		OrderReference: pending.OrderReference,
+		Status:         models.SubscriptionStatusPending, 
+	}
+	if err := tx.Create(&sub).Error; err != nil {
+		tx.Rollback()
+		return nil, fmt.Errorf("failed to create subscription record: %w", err)
+	}
+
+	if err := tx.Delete(&pending).Error; err != nil {
+		tx.Rollback()
+		return nil, fmt.Errorf("failed to clear pending signup: %w", err)
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		return nil, fmt.Errorf("failed to commit account creation: %w", err)
+	}
+
+	return &sub, nil
 }

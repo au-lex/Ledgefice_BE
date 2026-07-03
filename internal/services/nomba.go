@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"sync"
@@ -211,6 +212,170 @@ func (n *NombaService) ChargeTokenizedCard(in TokenizedChargeInput) (*TokenizedC
 	return &out.Data, nil
 }
 
+// ─── Bank list, account lookup, and Direct Debit mandates ────────────────────
+
+
+type Bank struct {
+	Code string `json:"code"`
+	Name string `json:"name"`
+}
+
+func (n *NombaService) ListBanks() ([]Bank, error) {
+	token, err := n.getToken()
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", n.BaseURL+"/v1/transfers/banks", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("accountId", n.AccountID)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("nomba list banks failed: status %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	var out struct {
+		Data struct {
+			Results []Bank `json:"results"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out.Data.Results, nil
+}
+
+type BankAccountLookupResult struct {
+	AccountNumber string `json:"accountNumber"`
+	AccountName   string `json:"accountName"`
+}
+
+func (n *NombaService) LookupBankAccount(accountNumber, bankCode string) (*BankAccountLookupResult, error) {
+	token, err := n.getToken()
+	if err != nil {
+		return nil, err
+	}
+
+	payload := map[string]string{
+		"accountNumber": accountNumber,
+		"bankCode":      bankCode,
+	}
+	body, _ := json.Marshal(payload)
+
+	req, err := http.NewRequest("POST", n.BaseURL+"/v1/transfers/bank/lookup", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("accountId", n.AccountID)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("nomba bank account lookup failed: status %d, body: %s", resp.StatusCode, string(respBody))
+	}
+
+	var out struct {
+		Data BankAccountLookupResult `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return &out.Data, nil
+}
+
+type CreateMandateInput struct {
+	CustomerAccountNumber string
+	BankCode              string
+	CustomerName          string
+	CustomerAddress       string
+	CustomerAccountName   string
+	Amount                float64
+	Frequency             string 
+	Narration             string
+	CustomerPhoneNumber   string
+	MerchantReference     string 
+	StartDate             string 
+	EndDate               string 
+	CustomerEmail         string
+	StartImmediately      bool
+}
+
+type CreateMandateResult struct {
+	MandateID         string `json:"mandateId"`
+	MerchantReference string `json:"merchantReference"`
+	PhoneNumber       string `json:"phoneNumber"`
+	Description       string `json:"description"` 
+}
+
+func (n *NombaService) CreateDirectDebitMandate(in CreateMandateInput) (*CreateMandateResult, error) {
+	token, err := n.getToken()
+	if err != nil {
+		return nil, err
+	}
+
+	payload := map[string]any{
+		"customerAccountNumber": in.CustomerAccountNumber,
+		"bankCode":              in.BankCode,
+		"customerName":          in.CustomerName,
+		"customerAddress":       in.CustomerAddress,
+		"customerAccountName":   in.CustomerAccountName,
+		"amount":                in.Amount,
+		"frequency":             in.Frequency,
+		"narration":             in.Narration,
+		"customerPhoneNumber":   in.CustomerPhoneNumber,
+		"merchantReference":     in.MerchantReference,
+		"startDate":             in.StartDate,
+		"endDate":               in.EndDate,
+		"customerEmail":         in.CustomerEmail,
+		"startImmediately":      in.StartImmediately,
+	}
+	body, _ := json.Marshal(payload)
+
+	req, err := http.NewRequest("POST", n.BaseURL+"/v1/direct-debits", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("accountId", n.AccountID)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("nomba create mandate failed: status %d, body: %s", resp.StatusCode, string(respBody))
+	}
+
+	var out struct {
+		Data CreateMandateResult `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return &out.Data, nil
+}
+
 // ─── Delete a tokenized card (customer wants their saved card removed) ───────
 
 func (n *NombaService) DeleteTokenizedCard(tokenKey string) error {
@@ -238,6 +403,55 @@ func (n *NombaService) DeleteTokenizedCard(tokenKey string) error {
 	return nil
 }
 
+// ─── Debit an active mandate (recurring charge for Direct Debit subscribers) ──
+
+type DebitMandateResult struct {
+	MandateID string `json:"mandateId"`
+	Status    string `json:"status"`
+	Amount    string `json:"amount"`
+	Message   string `json:"message"`
+}
+
+func (n *NombaService) DebitMandate(mandateID string, amount float64) (*DebitMandateResult, error) {
+	token, err := n.getToken()
+	if err != nil {
+		return nil, err
+	}
+
+	payload := map[string]string{
+		"mandateId": mandateID,
+		"amount":    fmt.Sprintf("%.2f", amount), // API expects amount as a string
+	}
+	body, _ := json.Marshal(payload)
+
+	req, err := http.NewRequest("POST", n.BaseURL+"/v1/direct-debits/debit-mandate", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("accountId", n.AccountID)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("nomba debit mandate failed: status %d, body: %s", resp.StatusCode, string(respBody))
+	}
+
+	var out struct {
+		Data DebitMandateResult `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return &out.Data, nil
+}
+
 // ─── Get saved cards for a customer (after order + tokenization) ─────────────
 
 type TokenizedCard struct {
@@ -248,35 +462,63 @@ type TokenizedCard struct {
 	TokenExpirationDate string `json:"tokenExpirationDate"`
 }
 
-func (n *NombaService) GetSavedCards(orderReference string) ([]TokenizedCard, error) {
+
+func (n *NombaService) GetSavedCards(customerEmail string) ([]TokenizedCard, error) {
 	token, err := n.getToken()
 	if err != nil {
 		return nil, err
 	}
 
-	req, err := http.NewRequest("GET", n.BaseURL+"/v1/checkout/user-card/"+orderReference, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	accountForLookup := n.AccountID
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
+	var matches []TokenizedCard
+	page := 0
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("nomba get saved cards failed: status %d", resp.StatusCode)
+	for {
+		url := fmt.Sprintf("%s/v1/checkout/tokenized-card-data?page=%d", n.BaseURL, page)
+
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("accountId", accountForLookup)
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			respBody, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("nomba list tokenized cards failed: status %d, body: %s", resp.StatusCode, string(respBody))
+		}
+
+		var out struct {
+			Data struct {
+				NextPage               int             `json:"nextPage"`
+				HasNextPage            bool            `json:"hasNextPage"`
+				TokenizedCardDataList  []TokenizedCard `json:"tokenizedCardDataList"`
+			} `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			resp.Body.Close()
+			return nil, err
+		}
+		resp.Body.Close()
+
+		for _, card := range out.Data.TokenizedCardDataList {
+			if card.CustomerEmail == customerEmail {
+				matches = append(matches, card)
+			}
+		}
+
+		if !out.Data.HasNextPage {
+			break
+		}
+		page = out.Data.NextPage
 	}
 
-	var out struct {
-		Data struct {
-			TokenizedCardData []TokenizedCard `json:"tokenizedCardData"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, err
-	}
-	return out.Data.TokenizedCardData, nil
+	return matches, nil
 }
