@@ -14,6 +14,15 @@ const (
 	SubscriptionStatusFailed  SubscriptionStatus = "failed"
 )
 
+type MandateStatus string
+
+const (
+	MandateStatusNone    MandateStatus = ""
+	MandateStatusPending MandateStatus = "pending" // created, awaiting NIBSS token-payment authentication
+	MandateStatusActive  MandateStatus = "active"
+	MandateStatusFailed  MandateStatus = "failed"
+)
+
 type Subscription struct {
 	Base
 	OrganizationID uuid.UUID          `gorm:"type:uuid;not null;index" json:"organization_id"`
@@ -28,4 +37,24 @@ type Subscription struct {
 	CardType       string             `json:"card_type,omitempty"`
 	CardPan        string             `json:"card_pan,omitempty"` // masked, e.g. 234818********7580
 	PaidAt         *time.Time         `json:"paid_at"`
+
+	// Direct Debit mandate fields — the fallback renewal path for customers who
+	// paid via bank_transfer and have no tokenized card.
+	MandateID          string        `json:"mandate_id,omitempty"`
+	MandateStatus      MandateStatus `gorm:"type:varchar(20);default:''" json:"mandate_status,omitempty"`
+	MandateBankCode    string        `json:"mandate_bank_code,omitempty"`
+	MandateAccountLast string        `json:"mandate_account_last,omitempty"` // last 4 digits only, never store full account number
+
+	// Dunning / retry fields — drive the renewal + retry cron. RenewsAt is set
+	// on every successful payment (PaidAt + 1 month). When a renewal charge
+	// fails, RetryCount/NextRetryAt/DunningStage are updated IN PLACE on this
+	// same row rather than creating a new one — a new row is only created once
+	// a charge actually succeeds (matching the existing Renew() convention of
+	// one row per successful/attempted cycle).
+	RenewsAt       *time.Time `json:"renews_at,omitempty"`
+	RetryCount     int        `gorm:"default:0" json:"retry_count"`
+	NextRetryAt    *time.Time `json:"next_retry_at,omitempty"`
+	DunningStage   string     `gorm:"type:varchar(20);default:''" json:"dunning_stage,omitempty"` // "", "retry_1", "retry_2", "retry_3", "cancelled"
+	CancelledAt    *time.Time `json:"cancelled_at,omitempty"`
+	LastRetryError string     `json:"last_retry_error,omitempty"`
 }

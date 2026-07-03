@@ -3,11 +3,13 @@ package main
 import (
 	"log"
 	"os"
+	"time"
 
 	"github.com/cloudinary/cloudinary-go/v2"
 	"github.com/gofiber/fiber/v2"
 	"github.com/ledgefice/internal/config"
 	"github.com/ledgefice/internal/database"
+	"github.com/ledgefice/internal/jobs"
 	"github.com/ledgefice/internal/middleware"
 	"github.com/ledgefice/internal/routes"
 	"github.com/ledgefice/internal/services"
@@ -27,9 +29,9 @@ func main() {
 	if err := database.Migrate(); err != nil {
 		log.Fatal("❌ Failed to run migrations:", err)
 	}
-	log.Println("✅ Database connected and migrated")
+	log.Println("===== Database connected and migrated =====")
 
-		// ── Cloudinary ────────────────────────────────────────────────────────
+	// ── Cloudinary ────────────────────────────────────────────────────────
 	cld, err := cloudinary.NewFromParams(
 		os.Getenv("CLOUDINARY_CLOUD_NAME"),
 		os.Getenv("CLOUDINARY_API_KEY"),
@@ -38,9 +40,15 @@ func main() {
 	if err != nil {
 		log.Fatal("❌ Failed to initialise Cloudinary:", err)
 	}
-		emailSvc := services.NewEmailClient()
+	emailSvc := services.NewEmailClient()
 	imgSvc := services.NewImageService(cld)
-	log.Println("✅ Cloudinary ready")
+	nombaSvc := services.NewNombaService()
+	log.Println("===== Cloudinary ready ===== ")
+
+	// ── Renewal / dunning cron ────────────────────────────────────────────
+	renewalSvc := &services.RenewalService{Nomba: nombaSvc, Mailer: emailSvc}
+	jobs.StartRenewalCron(renewalSvc, time.Hour)
+	log.Println("===== Renewal cron started (hourly) =====")
 
 	app := fiber.New(fiber.Config{
 		AppName: "VMS API v1",
@@ -55,9 +63,9 @@ func main() {
 
 	middleware.Register(app)
 
-	routes.RegisterRoutes(app, cfg.JWTSecret, imgSvc,emailSvc)
+	routes.RegisterRoutes(app, cfg.JWTSecret, imgSvc, emailSvc, nombaSvc, renewalSvc)
 
-	log.Printf("🚀 VMS API listening on :%s [%s]", cfg.AppPort, cfg.AppEnv)
+	log.Printf("===== VMS API listening on :%s [%s] =====", cfg.AppPort, cfg.AppEnv)
 	if err := app.Listen(":" + cfg.AppPort); err != nil {
 		log.Fatalf("server error: %v", err)
 	}

@@ -27,6 +27,10 @@ type onboardingInput struct {
 	Plan             string `form:"plan"`
 }
 
+// Setup NEVER creates an Organization/User/Department directly — every plan
+// requires payment, so this only ever creates a PendingSignup + Nomba
+// checkout order. The actual account gets created by PaymentHandler's webhook
+// once payment_success is confirmed 
 func (h *OnboardingHandler) Setup(c *fiber.Ctx) error {
 	var input onboardingInput
 	if err := c.BodyParser(&input); err != nil {
@@ -44,10 +48,20 @@ func (h *OnboardingHandler) Setup(c *fiber.Ctx) error {
 		plan = models.PlanStarter
 	}
 
-	// Check email not already taken
+	email := strings.ToLower(strings.TrimSpace(input.Email))
+
+	// Check email not already taken — by an existing user OR an unpaid pending
+	// signup. Without the second check, someone could spam checkout links
+	// against the same email indefinitely without ever paying.
 	var existing models.User
-	if err := database.DB.Where("email = ?", input.Email).First(&existing).Error; err == nil {
+	if err := database.DB.Where("email = ?", email).First(&existing).Error; err == nil {
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "email already in use"})
+	}
+	var existingPending models.PendingSignup
+	if err := database.DB.Where("email = ?", email).First(&existingPending).Error; err == nil {
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+			"error": "a signup for this email is already awaiting payment",
+		})
 	}
 
 	// Handle optional logo upload
@@ -75,120 +89,42 @@ func (h *OnboardingHandler) Setup(c *fiber.Ctx) error {
 		return utils.InternalError(c, err)
 	}
 
-	tx := database.DB.Begin()
-	defer func() {
-		if r := recover(); r != nil {
-			tx.Rollback()
-		}
-	}()
-
-	// 1. Create org (no owner yet)
-	org := models.Organization{
-		Name:            strings.TrimSpace(input.OrganizationName),
-		LogoURL:         logoURL,
-		NumberOfWorkers: input.NumberOfWorkers,
-		Plan:            plan,
-	}
-	if err := tx.Create(&org).Error; err != nil {
-		tx.Rollback()
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "organization name already exists"})
-	}
-
-	// 2. Create owner user — linked to org, no department yet
-	owner := models.User{
-		OrganizationID: org.ID,
-		Name:           strings.TrimSpace(input.OrganizationName) + " Admin",
-		Email:          strings.ToLower(strings.TrimSpace(input.Email)),
-		Password:       string(hash),
-		Status:         models.UserStatusActive,
-	}
-	if err := tx.Create(&owner).Error; err != nil {
-		tx.Rollback()
-		return utils.InternalError(c, err)
-	}
-
-	// 3. Link owner back to org
-	org.OwnerID = &owner.ID
-	if err := tx.Save(&org).Error; err != nil {
-		tx.Rollback()
-		return utils.InternalError(c, err)
-	}
-
-	// 4. Create owner department with full permissions
-	ownerDept := models.Department{
-		OrganizationID: org.ID,
-		Name:           "Owner",
-		Permissions:    models.FullPermissions(),
-	}
-	if err := tx.Create(&ownerDept).Error; err != nil {
-		tx.Rollback()
-		return utils.InternalError(c, err)
-	}
-
-	// 5. Assign owner to that department
-	owner.DepartmentID = &ownerDept.ID
-	if err := tx.Save(&owner).Error; err != nil {
-		tx.Rollback()
-		return utils.InternalError(c, err)
-	}
-
-	if err := tx.Commit().Error; err != nil {
-		return utils.InternalError(c, err)
-	}
-
 	cfg := models.GetPlanConfig(plan)
 
-	// Paid plans: create a Nomba checkout order with tokenizeCard so renewals
-	// can charge the saved card later without re-collecting card details.
-	var checkoutLink string
-	if cfg.MonthlyPrice > 0 {
-		orderRef := fmt.Sprintf("sub_%s_%d", org.ID.String()[:8], time.Now().Unix())
-		amountNaira := float64(cfg.MonthlyPrice) / 100.0 // kobo -> naira
+	namePart := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(input.OrganizationName)), " ", "")
+	orderRef := fmt.Sprintf("sub_%s_%d", namePart[:min(8, len(namePart))], time.Now().Unix())
+	amountNaira := float64(cfg.MonthlyPrice) / 100.0 // kobo -> naira
 
-		result, err := h.Nomba.CreateCheckoutOrder(services.CheckoutOrderInput{
-			OrderReference: orderRef,
-			CustomerEmail:  owner.Email,
-			Amount:         amountNaira,
-			Currency:       "NGN",
-			CallbackURL:    os.Getenv("APP_BASE_URL") + "/payments/nomba/callback",
-			TokenizeCard:   true,
-		})
-		if err != nil {
-			return utils.InternalError(c, err)
-		}
+	result, err := h.Nomba.CreateCheckoutOrder(services.CheckoutOrderInput{
+		OrderReference: orderRef,
+		CustomerEmail:  email,
+		Amount:         amountNaira,
+		Currency:       "NGN",
+		CallbackURL:    os.Getenv("APP_BASE_URL") + "/payments/nomba/callback",
+		TokenizeCard:   true,
+	})
+	if err != nil {
+		return utils.InternalError(c, err)
+	}
 
-		sub := models.Subscription{
-			OrganizationID: org.ID,
-			Plan:           plan,
-			Amount:         amountNaira,
-			Currency:       "NGN",
-	        OrderReference: orderRef,
-			CheckoutLink:   result.CheckoutLink,
-			Status:         models.SubscriptionStatusPending,
-		}
-		if err := database.DB.Create(&sub).Error; err != nil {
-			return utils.InternalError(c, err)
-		}
-		checkoutLink = result.CheckoutLink
+	pending := models.PendingSignup{
+		OrganizationName: strings.TrimSpace(input.OrganizationName),
+		Email:            email,
+		PasswordHash:     string(hash),
+		LogoURL:          logoURL,
+		NumberOfWorkers:  input.NumberOfWorkers,
+		Plan:             plan,
+		OrderReference:   orderRef,
+		Amount:           amountNaira,
+		Currency:         "NGN",
+	}
+	if err := database.DB.Create(&pending).Error; err != nil {
+		return utils.InternalError(c, err)
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
-		"message":       "workspace created",
-		"checkout_link": checkoutLink,
-		"org": fiber.Map{
-			"id":   org.ID,
-			"name": org.Name,
-			"plan": org.Plan,
-			"logo": org.LogoURL,
-			"limits": fiber.Map{
-				"max_departments": cfg.MaxDepartments,
-				"max_users":       cfg.MaxUsers,
-			},
-			"features": cfg.Features,
-		},
-		"owner": fiber.Map{
-			"id":    owner.ID,
-			"email": owner.Email,
-		},
+		"message":         "checkout created — your workspace will be set up once payment is confirmed",
+		"checkout_link":   result.CheckoutLink,
+		"order_reference": orderRef,
 	})
 }

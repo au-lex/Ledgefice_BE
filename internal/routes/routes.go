@@ -1,6 +1,8 @@
 package routes
 
 import (
+	"time"
+
 	"github.com/gofiber/fiber/v2"
 	"github.com/ledgefice/internal/handlers"
 	"github.com/ledgefice/internal/middleware"
@@ -8,11 +10,9 @@ import (
 	"github.com/ledgefice/internal/services"
 )
 
-func RegisterRoutes(app *fiber.App, jwtSecret string, imgSvc *services.ImageService, emailSvc *services.EmailClient) {
+func RegisterRoutes(app *fiber.App, jwtSecret string, imgSvc *services.ImageService, emailSvc *services.EmailClient, nombaSvc *services.NombaService, renewalSvc *services.RenewalService) {
 
 	api := app.Group("/api/v1")
-
-	nombaSvc := services.NewNombaService()
 
 	// ─── Public ─────────────────────────────────────────────────────────────
 
@@ -31,8 +31,7 @@ func RegisterRoutes(app *fiber.App, jwtSecret string, imgSvc *services.ImageServ
 	api.Get("/payments/nomba/callback", payments.NombaCallback)
 	api.Post("/payments/nomba/webhook", payments.NombaWebhook)
 
-	// Subscription status / token lookup — polled by frontend, public since the
-	// onboarding owner isn't logged in yet when checking these.
+	
 	subs := &handlers.SubscriptionHandler{Nomba: nombaSvc}
 	api.Get("/subscriptions/:ref/status", subs.Status)
 
@@ -41,22 +40,26 @@ func RegisterRoutes(app *fiber.App, jwtSecret string, imgSvc *services.ImageServ
 
 	api.Get("/auth/me", guard, auth.Me)
 
-	// Logged-in org's own saved card — lookup + delete. Registered BEFORE the
-	// /:ref/token route below, since Fiber matches route patterns in
-	// registration order when they overlap ("me" would otherwise be swallowed
-	// by the :ref wildcard and never reach these handlers).
+	// Logged-in org's own saved card — lookup + delete. Reg
 	api.Get("/subscriptions/me/token", guard, subs.MyToken)
+	api.Get("/subscriptions/me/token/live", guard, subs.MyLiveToken)
 	api.Delete("/subscriptions/me/token", guard, subs.DeleteMyToken)
 
 	// order_reference-based lookup — must come AFTER /me/token above.
 	api.Get("/subscriptions/:ref/token", subs.Token)
 
-	// Renew a subscription using its saved tokenized card — manual trigger for
-	// now, requires login since it's a real charge against an existing org.
+	// Renew a subscription using its saved tokenized card
 	api.Post("/subscriptions/:id/renew", guard, subs.Renew)
 
 	// List every saved tokenized card across subscriptions — admin/debug view.
 	api.Get("/subscriptions/tokens",  subs.ListTokens)
+
+	// Direct Debit mandate flow — fallback recurring billing for orgs that paid
+	// via bank_transfer and have no tokenized card to renew against.
+	mandates := &handlers.MandateHandler{Nomba: nombaSvc}
+	api.Get("/mandates/banks", guard, mandates.ListBanks)
+	api.Post("/mandates/lookup-account", guard, mandates.LookupAccount)
+	api.Post("/mandates", guard, mandates.CreateMandate)
 
 	// Users
 	users := &handlers.UserHandler{Email: emailSvc}
@@ -114,6 +117,20 @@ func RegisterRoutes(app *fiber.App, jwtSecret string, imgSvc *services.ImageServ
 	// Audit
 	audit := &handlers.AuditHandler{}
 	api.Get("/audit-logs", guard, middleware.RequirePermission(models.PermCanViewAuditLogs), audit.List)
+
+
+
+	// ─── Admin ────────────────────────────────────────────────────────────────
+	admin := &handlers.AdminHandler{Renewal: renewalSvc, JWTSecret: jwtSecret, JWTExpiresIn: 24 * time.Hour}
+	api.Post("/admin/auth/login", admin.Login)
+
+	adminGuard := middleware.RequireAdmin(jwtSecret)
+	adminGroup := api.Group("/admin", adminGuard)
+	adminGroup.Post("/renewals/run", admin.RunRenewalsNow)
+	adminGroup.Get("/organizations", admin.ListOrganizations)
+	adminGroup.Get("/organizations/:id", admin.GetOrganization)
+	adminGroup.Put("/organizations/:id", admin.UpdateOrganization)
+	adminGroup.Delete("/organizations/:id", admin.DeleteOrganization)
 
 	// Health check
 	app.Get("/health", func(c *fiber.Ctx) error {

@@ -26,6 +26,8 @@ func Migrate() error {
 		&models.DuplicateFlag{},
 		&models.Subscription{},
 		&models.WebhookEvent{},
+		&models.PendingSignup{},
+		&models.AdminUser{},
 	)
 	if err != nil {
 		log.Printf("Error migrating database: %v", err)

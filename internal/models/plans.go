@@ -50,8 +50,8 @@ var PlanConfigs = map[PlanType]PlanConfig{
 	PlanBusiness: {
 		Name:           "Business",
 		MaxDepartments: 15,
-		MaxUsers:       150,
-		MonthlyPrice:   1500,
+		MaxUsers:       500,
+		MonthlyPrice:   5000,
 		YearlyPrice:    3600000,
 		Features: PlanFeatures{
 			MultiStepApprovals:     true,
