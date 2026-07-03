@@ -53,6 +53,46 @@ func (h *MandateHandler) LookupAccount(c *fiber.Ctx) error {
 	})
 }
 
+// GetMandateStatus checks whether a mandate has moved from pending (created,
+// awaiting the customer's NIBSS token-payment authentication) to active.
+func (h *MandateHandler) GetMandateStatus(c *fiber.Ctx) error {
+	orgID := middleware.CurrentOrgID(c)
+	if orgID == uuid.Nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "missing organization context"})
+	}
+
+	var sub models.Subscription
+	if err := database.DB.
+		Where("organization_id = ? AND mandate_id != ''", orgID).
+		Order("created_at DESC").
+		First(&sub).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "no mandate found for this organization"})
+	}
+
+	result, err := h.Nomba.GetMandateStatus(sub.MandateID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to fetch mandate status: " + err.Error()})
+	}
+
+	// Nomba returns capitalized strings ("Active"), map to this codebase's
+	
+	switch result.MandateStatus {
+	case "Active":
+		sub.MandateStatus = models.MandateStatusActive
+	case "Failed", "Rejected":
+		sub.MandateStatus = models.MandateStatusFailed
+	default:
+		sub.MandateStatus = models.MandateStatusPending
+	}
+	database.DB.Save(&sub)
+
+	return c.JSON(fiber.Map{
+		"mandate_id":     result.MandateID,
+		"mandate_status": result.MandateStatus,
+		"rejection_comment": result.RejectionComment,
+	})
+}
+
 type createMandateRequest struct {
 	AccountNumber string `json:"account_number"`
 	BankCode      string `json:"bank_code"`
@@ -63,8 +103,7 @@ type createMandateRequest struct {
 // most recent subscription — the fallback path for orgs that paid via
 // bank_transfer and have no tokenized card to renew against. The mandate
 // itself doesn't charge the subscription amount; it triggers a small NIBSS
-// token-payment step the customer must complete to authenticate it. Actual
-// billing later goes through DebitMandate 
+// token-payment step the customer must complete to authenticate it. 
 func (h *MandateHandler) CreateMandate(c *fiber.Ctx) error {
 	orgID := middleware.CurrentOrgID(c)
 	if orgID == uuid.Nil {
@@ -113,7 +152,7 @@ func (h *MandateHandler) CreateMandate(c *fiber.Ctx) error {
 		CustomerAccountNumber: req.AccountNumber,
 		BankCode:              req.BankCode,
 		CustomerName:          req.AccountName,
-		CustomerAddress:       org.Name, 
+		CustomerAddress:       org.Name,
 		CustomerAccountName:   req.AccountName,
 		Amount:                sub.Amount,
 		Frequency:             "MONTHLY",

@@ -213,7 +213,8 @@ func (n *NombaService) ChargeTokenizedCard(in TokenizedChargeInput) (*TokenizedC
 }
 
 // ─── Bank list, account lookup, and Direct Debit mandates ────────────────────
-
+// Fallback recurring-billing path for customers who paid via bank_transfer and
+// have no tokenized card
 
 type Bank struct {
 	Code string `json:"code"`
@@ -311,8 +312,8 @@ type CreateMandateInput struct {
 	Narration             string
 	CustomerPhoneNumber   string
 	MerchantReference     string 
-	StartDate             string 
-	EndDate               string 
+	StartDate             string // e.g. "2026-08-01T00:00"
+	EndDate               string // e.g. "2027-08-01T00:00"
 	CustomerEmail         string
 	StartImmediately      bool
 }
@@ -420,7 +421,7 @@ func (n *NombaService) DebitMandate(mandateID string, amount float64) (*DebitMan
 
 	payload := map[string]string{
 		"mandateId": mandateID,
-		"amount":    fmt.Sprintf("%.2f", amount), // API expects amount as a string
+		"amount":    fmt.Sprintf("%.2f", amount), 
 	}
 	body, _ := json.Marshal(payload)
 
@@ -445,6 +446,53 @@ func (n *NombaService) DebitMandate(mandateID string, amount float64) (*DebitMan
 
 	var out struct {
 		Data DebitMandateResult `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return &out.Data, nil
+}
+
+// ─── Get mandate status ───────────────────────────────────────────────────────
+
+
+type MandateStatusResult struct {
+	CustomerAccountName   string `json:"customerAccountName"`
+	MandateID             string `json:"mandateId"`
+	CustomerAccountNumber string `json:"customerAccountNumber"`
+	MandateStatus         string `json:"mandateStatus"` // e.g. "Active" — capitalized, per Nomba's actual response
+	RejectionComment      string `json:"rejectionComment,omitempty"`
+	MandateAdviceStatus   string `json:"mandateAdviceStatus,omitempty"`
+}
+
+func (n *NombaService) GetMandateStatus(mandateID string) (*MandateStatusResult, error) {
+	token, err := n.getToken()
+	if err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("%s/v1/direct-debits/status?mandateId=%s", n.BaseURL, mandateID)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("accountId", n.AccountID)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("nomba get mandate status failed: status %d, body: %s", resp.StatusCode, string(respBody))
+	}
+
+	var out struct {
+		Data MandateStatusResult `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, err
