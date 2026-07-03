@@ -9,26 +9,26 @@ import (
 )
 
 // RetrySchedule defines how long to wait after each failed attempt before
-// trying again.
+
 var RetrySchedule = []time.Duration{
 	24 * time.Hour,
 	3 * 24 * time.Hour,
 	7 * 24 * time.Hour,
 }
 
-// RenewalService owns the renewal + dunning cron logic. 
+// RenewalService owns the renewal + dunning cron logic. It depends on
+// NombaService for actually charging, and on an EmailSender for dunning
+// emails 
 type RenewalService struct {
 	Nomba  *NombaService
 	Mailer EmailSender
 }
 
-
 type EmailSender interface {
 	Send(to, subject, htmlBody string) error
 }
 
-// ProcessDueRenewals is the single entrypoint the cron job  call on a
-// schedule (e.g. every hour for now ). It handles three separate cohorts of
+// ProcessDueRenewals  handles three separate cohorts of
 // subscriptions in one pass:
 //  1. Subscriptions due for their first renewal attempt this cycle.
 //  2. Subscriptions mid-retry, due for their next retry attempt.
@@ -121,6 +121,13 @@ func (r *RenewalService) attemptCharge(sub models.Subscription, isRetry bool) {
 
 	switch {
 	case sub.MandateID != "" && sub.TokenKey == "":
+		if sub.MandateStatus != models.MandateStatusActive {
+			// Don't attempt a debit against a mandate that hasn't been
+			// confirmed active yet (still pending NIBSS authentication, or
+			// failed/rejected). 
+			chargeErr = fmt.Errorf("mandate %s is not active (status=%s) — skipping debit attempt", sub.MandateID, sub.MandateStatus)
+			break
+		}
 		result, err := r.Nomba.DebitMandate(sub.MandateID, sub.Amount)
 		if err != nil {
 			chargeErr = err
@@ -142,6 +149,7 @@ func (r *RenewalService) attemptCharge(sub models.Subscription, isRetry bool) {
 		if err != nil {
 			chargeErr = err
 		} else {
+	
 			succeeded = true
 		}
 

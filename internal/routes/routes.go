@@ -60,6 +60,7 @@ func RegisterRoutes(app *fiber.App, jwtSecret string, imgSvc *services.ImageServ
 	api.Get("/mandates/banks", guard, mandates.ListBanks)
 	api.Post("/mandates/lookup-account", guard, mandates.LookupAccount)
 	api.Post("/mandates", guard, mandates.CreateMandate)
+	api.Get("/mandates/status", guard, mandates.GetMandateStatus)
 
 	// Users
 	users := &handlers.UserHandler{Email: emailSvc}
