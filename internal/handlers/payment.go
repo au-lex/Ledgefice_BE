@@ -46,6 +46,19 @@ type nombaWebhookPayload struct {
 			WalletID string `json:"walletId"`
 		} `json:"merchant"`
 
+		// TokenizedCardData is included directly on payment_success webhooks
+		// for card_payment orders — reading it here avoids a second,
+		// racy call to GetSavedCards right after the webhook fires (Nomba's
+		// vault write and the webhook dispatch aren't guaranteed to be
+		// synchronous, so querying immediately after can return zero cards).
+		TokenizedCardData struct {
+			TokenKey         string `json:"tokenKey"`
+			CardType         string `json:"cardType"`
+			TokenExpiryYear  string `json:"tokenExpiryYear"`
+			TokenExpiryMonth string `json:"tokenExpiryMonth"`
+			CardPan          string `json:"cardPan"`
+		} `json:"tokenizedCardData"`
+
 		Transaction struct {
 			TransactionID     string  `json:"transactionId"`
 			Type              string  `json:"type"`
@@ -65,8 +78,39 @@ type nombaWebhookPayload struct {
 	} `json:"data"`
 }
 
-// NombaWebhook handles server-to-server webhook from Nomba
 
+func fetchNewestCardWithRetry(nomba *services.NombaService, email string) (*services.TokenizedCard, error) {
+	var lastErr error
+	delays := []time.Duration{0, 2 * time.Second, 5 * time.Second, 10 * time.Second}
+
+	for _, d := range delays {
+		if d > 0 {
+			time.Sleep(d)
+		}
+
+		cards, err := nomba.GetSavedCards(email)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if len(cards) == 0 {
+			lastErr = fmt.Errorf("no cards found yet for %s", email)
+			continue
+		}
+
+		newest := cards[0]
+		for _, c := range cards[1:] {
+			if c.TokenExpirationDate > newest.TokenExpirationDate {
+				newest = c
+			}
+		}
+		return &newest, nil
+	}
+
+	return nil, lastErr
+}
+
+// NombaWebhook handles server-to-server webhook from Nomba
 func (h *PaymentHandler) NombaWebhook(c *fiber.Ctx) error {
 
 	fmt.Println("\n🔥🔥🔥 NOMBA WEBHOOK RECEIVED 🔥🔥🔥")
@@ -135,16 +179,6 @@ func (h *PaymentHandler) NombaWebhook(c *fiber.Ctx) error {
 	fmt.Println("REQUEST ID:", payload.RequestID)
 	fmt.Println("ORDER REF:", payload.Data.Order.OrderReference)
 
-	event := models.WebhookEvent{
-		RequestID: payload.RequestID,
-		EventType: payload.EventType,
-	}
-
-	if err := database.DB.Create(&event).Error; err != nil {
-		fmt.Println("⚠️ Duplicate webhook")
-		return c.SendStatus(200)
-	}
-
 	ref := payload.Data.Order.OrderReference
 
 	if ref == "" {
@@ -152,8 +186,9 @@ func (h *PaymentHandler) NombaWebhook(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "missing orderReference"})
 	}
 
-	// ─── Look up an existing Subscription first (renewal path — org already
-	// exists in this case, since Renew() only runs for existing orgs) ────────
+	// ─── Look up an existing Subscription first (renewal/upgrade path — org
+	// already exists in this case, since Renew() and Upgrade() only run for
+	// existing orgs) ──────────────────────────────────────────────────────────
 	var sub models.Subscription
 	err := database.DB.Where("order_reference = ?", ref).First(&sub).Error
 
@@ -169,9 +204,6 @@ func (h *PaymentHandler) NombaWebhook(c *fiber.Ctx) error {
 	// created here, now that payment_success has actually been confirmed. ────
 	if !subFound {
 		if payload.EventType != "payment_success" {
-			// A payment_failed webhook for a signup that never completed just
-			// means the pending signup stays pending — nothing to clean up
-			// here (it'll simply never convert to a real account).
 			fmt.Println("ℹ️ No subscription found and event is not payment_success — nothing to do")
 			return c.SendStatus(200)
 		}
@@ -200,6 +232,28 @@ func (h *PaymentHandler) NombaWebhook(c *fiber.Ctx) error {
 
 	fmt.Println("SUB FOUND/CREATED:", sub.ID)
 
+	// ─── Dedup guard — scoped so it only skips work that's already genuinely
+	// complete. A duplicate delivery for a sub that already has its token
+	// saved is truly a no-op; a duplicate delivery for a sub that's paid but
+	// still missing TokenKey (e.g. a prior fallback attempt failed) is
+	// allowed through, since Nomba's own retry delivery is exactly the
+	// second chance needed to fix that.
+	event := models.WebhookEvent{
+		RequestID: payload.RequestID,
+		EventType: payload.EventType,
+	}
+	isDuplicateDelivery := database.DB.Create(&event).Error != nil
+
+	if isDuplicateDelivery {
+		alreadyComplete := sub.Status == models.SubscriptionStatusPaid &&
+			(sub.TokenKey != "" || payload.Data.Order.PaymentMethod == "bank_transfer")
+		if alreadyComplete {
+			fmt.Println("⚠️ Duplicate webhook, and token/status already settled — skipping")
+			return c.SendStatus(200)
+		}
+		fmt.Println("⚠️ Duplicate webhook delivery, but token save previously incomplete — retrying")
+	}
+
 	switch payload.EventType {
 
 	case "payment_success":
@@ -223,19 +277,58 @@ func (h *PaymentHandler) NombaWebhook(c *fiber.Ctx) error {
 
 		fmt.Println("✅ SUBSCRIPTION UPDATED TO PAID")
 
-		if payload.Data.Order.PaymentMethod == "bank_transfer" {
-			fmt.Println("ℹ️ bank_transfer payment — no card to tokenize, skipping card fetch")
-		} else {
-			cards, err := h.Nomba.GetSavedCards(payload.Data.Order.CustomerEmail)
+		// ─── Promote the org to this subscription's plan. No-op for renewals
+		// (Renew() always carries over the same plan), but this is the step
+		// that actually completes an upgrade/downgrade initiated via
+		// SubscriptionHandler.Upgrade — org.Plan is what everything else
+		// (limits, feature gates) actually reads. ──────────────────────────
+		var org models.Organization
+		if err := database.DB.Where("id = ?", sub.OrganizationID).First(&org).Error; err != nil {
+			fmt.Println("⚠️ FAILED TO LOAD ORG FOR PLAN SYNC:", err)
+		} else if org.Plan != sub.Plan {
+			oldPlan := org.Plan
+			org.Plan = sub.Plan
+			if err := database.DB.Save(&org).Error; err != nil {
+				// Payment succeeded and the subscription row is correct, but
+				// the org's plan didn't update — needs the same kind of
+				// manual-follow-up alert as the pending-signup failure above,
+				// since the customer is now paying for a plan they don't have.
+				fmt.Println("❌ FAILED TO UPDATE ORG PLAN AFTER PAYMENT:", err)
+			} else {
+				fmt.Println("✅ ORG PLAN CHANGED:", oldPlan, "→", org.Plan)
+			}
+		}
 
+		// ─── Save the tokenized card ────────────────────────────────────────
+		if payload.Data.Order.PaymentMethod == "bank_transfer" {
+			fmt.Println("ℹ️ bank_transfer payment — no card to tokenize, skipping card save")
+		} else if payload.Data.TokenizedCardData.TokenKey != "" {
+			// Primary path: the token is already in the webhook payload, so
+			// there's no extra API call and no race condition to worry about.
+			sub.TokenKey = payload.Data.TokenizedCardData.TokenKey
+			sub.CardType = payload.Data.TokenizedCardData.CardType
+			sub.CardPan = payload.Data.TokenizedCardData.CardPan
+			if err := database.DB.Save(&sub).Error; err != nil {
+				fmt.Println("❌ FAILED TO SAVE CARD TOKEN FROM PAYLOAD:", err)
+			} else {
+				fmt.Println("✅ CARD TOKEN SAVED (from webhook payload)")
+			}
+		} else {
+			// Fallback: only reached if Nomba ever sends a payment_success
+			// webhook without tokenizedCardData populated. Keeps the retry
+			// logic as a safety net rather than the primary mechanism.
+			fmt.Println("⚠️ tokenizedCardData missing from webhook payload — falling back to API lookup")
+			card, err := fetchNewestCardWithRetry(h.Nomba, payload.Data.Order.CustomerEmail)
 			if err != nil {
-				fmt.Println("Token fetch failed:", err)
-			} else if len(cards) > 0 {
-				sub.TokenKey = cards[0].TokenKey
-				sub.CardType = cards[0].CardType
-				sub.CardPan = cards[0].CardPan
+				fmt.Println("❌ TOKEN FETCH FAILED AFTER RETRIES:", err)
+				sub.LastRetryError = "token fetch failed: " + err.Error()
 				database.DB.Save(&sub)
-				fmt.Println("✅ CARD TOKEN SAVED")
+			} else if card != nil {
+				sub.TokenKey = card.TokenKey
+				sub.CardType = card.CardType
+				sub.CardPan = card.CardPan
+				database.DB.Save(&sub)
+				fmt.Println("✅ CARD TOKEN SAVED (fallback API lookup)")
 			}
 		}
 
@@ -309,7 +402,7 @@ func createAccountFromPendingSignup(pending models.PendingSignup) (*models.Subsc
 		Amount:         pending.Amount,
 		Currency:       pending.Currency,
 		OrderReference: pending.OrderReference,
-		Status:         models.SubscriptionStatusPending, 
+		Status:         models.SubscriptionStatusPending,
 	}
 	if err := tx.Create(&sub).Error; err != nil {
 		tx.Rollback()

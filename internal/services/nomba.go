@@ -246,14 +246,12 @@ func (n *NombaService) ListBanks() ([]Bank, error) {
 	}
 
 	var out struct {
-		Data struct {
-			Results []Bank `json:"results"`
-		} `json:"data"`
+		Data []Bank `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, err
 	}
-	return out.Data.Results, nil
+	return out.Data, nil
 }
 
 type BankAccountLookupResult struct {
@@ -308,10 +306,10 @@ type CreateMandateInput struct {
 	CustomerAddress       string
 	CustomerAccountName   string
 	Amount                float64
-	Frequency             string 
+	Frequency             string
 	Narration             string
 	CustomerPhoneNumber   string
-	MerchantReference     string 
+	MerchantReference     string
 	StartDate             string // e.g. "2026-08-01T00:00"
 	EndDate               string // e.g. "2027-08-01T00:00"
 	CustomerEmail         string
@@ -322,7 +320,7 @@ type CreateMandateResult struct {
 	MandateID         string `json:"mandateId"`
 	MerchantReference string `json:"merchantReference"`
 	PhoneNumber       string `json:"phoneNumber"`
-	Description       string `json:"description"` 
+	Description       string `json:"description"`
 }
 
 func (n *NombaService) CreateDirectDebitMandate(in CreateMandateInput) (*CreateMandateResult, error) {
@@ -377,20 +375,24 @@ func (n *NombaService) CreateDirectDebitMandate(in CreateMandateInput) (*CreateM
 	return &out.Data, nil
 }
 
-// ─── Delete a tokenized card (customer wants their saved card removed) ───────
-
 func (n *NombaService) DeleteTokenizedCard(tokenKey string) error {
 	token, err := n.getToken()
 	if err != nil {
 		return err
 	}
 
-	req, err := http.NewRequest("DELETE", n.BaseURL+"/v1/checkout/tokenized-card-data/"+tokenKey, nil)
+	payload := map[string]string{
+		"tokenKey": tokenKey,
+	}
+	body, _ := json.Marshal(payload)
+
+	req, err := http.NewRequest("DELETE", n.BaseURL+"/v1/checkout/tokenized-card-data", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("accountId", n.AccountID)
+	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -399,7 +401,8 @@ func (n *NombaService) DeleteTokenizedCard(tokenKey string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("nomba delete tokenized card failed: status %d", resp.StatusCode)
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("nomba delete tokenized card failed: status %d, body: %s", resp.StatusCode, string(respBody))
 	}
 	return nil
 }
@@ -421,7 +424,7 @@ func (n *NombaService) DebitMandate(mandateID string, amount float64) (*DebitMan
 
 	payload := map[string]string{
 		"mandateId": mandateID,
-		"amount":    fmt.Sprintf("%.2f", amount), 
+		"amount":    fmt.Sprintf("%.2f", amount),
 	}
 	body, _ := json.Marshal(payload)
 
@@ -454,7 +457,6 @@ func (n *NombaService) DebitMandate(mandateID string, amount float64) (*DebitMan
 }
 
 // ─── Get mandate status ───────────────────────────────────────────────────────
-
 
 type MandateStatusResult struct {
 	CustomerAccountName   string `json:"customerAccountName"`
@@ -510,7 +512,6 @@ type TokenizedCard struct {
 	TokenExpirationDate string `json:"tokenExpirationDate"`
 }
 
-
 func (n *NombaService) GetSavedCards(customerEmail string) ([]TokenizedCard, error) {
 	token, err := n.getToken()
 	if err != nil {
@@ -545,9 +546,9 @@ func (n *NombaService) GetSavedCards(customerEmail string) ([]TokenizedCard, err
 
 		var out struct {
 			Data struct {
-				NextPage               int             `json:"nextPage"`
-				HasNextPage            bool            `json:"hasNextPage"`
-				TokenizedCardDataList  []TokenizedCard `json:"tokenizedCardDataList"`
+				NextPage              int             `json:"nextPage"`
+				HasNextPage           bool            `json:"hasNextPage"`
+				TokenizedCardDataList []TokenizedCard `json:"tokenizedCardDataList"`
 			} `json:"data"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {

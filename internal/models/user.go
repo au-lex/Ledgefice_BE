@@ -49,6 +49,8 @@ type User struct {
 	DepartmentID   *uuid.UUID    `gorm:"type:uuid" json:"department_id"`
 	Department     *Department   `gorm:"foreignKey:DepartmentID" json:"department,omitempty"`
 	Status         UserStatus    `gorm:"type:varchar(20);default:'active'" json:"status"`
+	AvatarURL       string        `json:"avatar_url"`
+	AvatarPublicID  string        `json:"-"`
 	LastLoginAt    *time.Time    `json:"last_login_at"`
 }
 

@@ -55,27 +55,32 @@ func (h *MandateHandler) LookupAccount(c *fiber.Ctx) error {
 
 // GetMandateStatus checks whether a mandate has moved from pending (created,
 // awaiting the customer's NIBSS token-payment authentication) to active.
+// mandateId is passed explicitly via the route param, e.g.
+// GET /mandates/:mandateId/status
 func (h *MandateHandler) GetMandateStatus(c *fiber.Ctx) error {
 	orgID := middleware.CurrentOrgID(c)
 	if orgID == uuid.Nil {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "missing organization context"})
 	}
 
+	mandateID := c.Params("mandateId")
+	if mandateID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "mandateId is required"})
+	}
+
+	// Confirm this mandate actually belongs to the caller's org before hitting Nomba.
 	var sub models.Subscription
 	if err := database.DB.
-		Where("organization_id = ? AND mandate_id != ''", orgID).
-		Order("created_at DESC").
+		Where("organization_id = ? AND mandate_id = ?", orgID, mandateID).
 		First(&sub).Error; err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "no mandate found for this organization"})
 	}
 
-	result, err := h.Nomba.GetMandateStatus(sub.MandateID)
+	result, err := h.Nomba.GetMandateStatus(mandateID)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to fetch mandate status: " + err.Error()})
 	}
 
-	// Nomba returns capitalized strings ("Active"), map to this codebase's
-	
 	switch result.MandateStatus {
 	case "Active":
 		sub.MandateStatus = models.MandateStatusActive
@@ -87,8 +92,8 @@ func (h *MandateHandler) GetMandateStatus(c *fiber.Ctx) error {
 	database.DB.Save(&sub)
 
 	return c.JSON(fiber.Map{
-		"mandate_id":     result.MandateID,
-		"mandate_status": result.MandateStatus,
+		"mandate_id":        result.MandateID,
+		"mandate_status":    result.MandateStatus,
 		"rejection_comment": result.RejectionComment,
 	})
 }
@@ -97,13 +102,14 @@ type createMandateRequest struct {
 	AccountNumber string `json:"account_number"`
 	BankCode      string `json:"bank_code"`
 	AccountName   string `json:"account_name"` // the resolved name from LookupAccount, confirmed by the user
+	PhoneNumber   string `json:"phone_number"` // required by Nomba's mandate API — was previously sent blank, causing a 422
 }
 
 // CreateMandate sets up recurring direct-debit billing for the logged-in org's
 // most recent subscription — the fallback path for orgs that paid via
 // bank_transfer and have no tokenized card to renew against. The mandate
 // itself doesn't charge the subscription amount; it triggers a small NIBSS
-// token-payment step the customer must complete to authenticate it. 
+// token-payment step the customer must complete to authenticate it.
 func (h *MandateHandler) CreateMandate(c *fiber.Ctx) error {
 	orgID := middleware.CurrentOrgID(c)
 	if orgID == uuid.Nil {
@@ -114,8 +120,8 @@ func (h *MandateHandler) CreateMandate(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
 	}
-	if req.AccountNumber == "" || req.BankCode == "" || req.AccountName == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "account_number, bank_code, and account_name are required"})
+	if req.AccountNumber == "" || req.BankCode == "" || req.AccountName == "" || req.PhoneNumber == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "account_number, bank_code, account_name, and phone_number are required"})
 	}
 
 	var org models.Organization
@@ -157,7 +163,7 @@ func (h *MandateHandler) CreateMandate(c *fiber.Ctx) error {
 		Amount:                sub.Amount,
 		Frequency:             "MONTHLY",
 		Narration:             fmt.Sprintf("%s subscription renewal", org.Name),
-		CustomerPhoneNumber:   "", 
+		CustomerPhoneNumber:   req.PhoneNumber,
 		MerchantReference:     merchantRef,
 		StartDate:             start.Format("2006-01-02T15:04"),
 		EndDate:               end.Format("2006-01-02T15:04"),
@@ -183,4 +189,35 @@ func (h *MandateHandler) CreateMandate(c *fiber.Ctx) error {
 		"status":      "pending",
 		"description": result.Description, // shows the customer the NIBSS token-payment instructions
 	})
+}
+
+// did it for testing purpose only, to reset the mandate fields on the org's latest subscription so a fresh CreateMandate attempt isn't blocked by leftover state from a failed or test attempt. 
+// ResetMandate clears mandate fields on the org's latest subscription so a
+// fresh CreateMandate attempt isn't blocked by leftover state from a failed
+// or test attempt. Debug/dev tool only — gate this behind an env check or
+// remove before shipping to production.
+func (h *MandateHandler) ResetMandate(c *fiber.Ctx) error {
+	orgID := middleware.CurrentOrgID(c)
+	if orgID == uuid.Nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "missing organization context"})
+	}
+
+	var sub models.Subscription
+	if err := database.DB.
+		Where("organization_id = ?", orgID).
+		Order("created_at DESC").
+		First(&sub).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "no subscription found for this organization"})
+	}
+
+	sub.MandateID = ""
+	sub.MandateStatus = models.MandateStatusNone
+	sub.MandateBankCode = ""
+	sub.MandateAccountLast = ""
+
+	if err := database.DB.Save(&sub).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to reset mandate"})
+	}
+
+	return c.JSON(fiber.Map{"message": "mandate reset — you can create a new one now"})
 }

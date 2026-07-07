@@ -36,8 +36,7 @@ func (h *AdminHandler) Login(c *fiber.Ctx) error {
 
 	var admin models.AdminUser
 	if err := database.DB.Where("email = ?", req.Email).First(&admin).Error; err != nil {
-		// Same generic error for "not found" and "wrong password" — don't leak
-		// which one it was.
+	
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid email or password"})
 	}
 
@@ -84,10 +83,7 @@ func (h *AdminHandler) Login(c *fiber.Ctx) error {
 // ─── Renewal cron trigger ──────────────────────────────────────────────────
 
 // RunRenewalsNow triggers ProcessDueRenewals immediately instead of waiting
-// for the hourly cron. Useful for testing the dunning flow without waiting a
-// month for RenewsAt to come due, or an hour for the ticker to fire — but
-// keep this locked behind admin auth even after testing, since it force-
-// charges every subscription that's currently due.
+
 func (h *AdminHandler) RunRenewalsNow(c *fiber.Ctx) error {
 	if err := h.Renewal.ProcessDueRenewals(); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
@@ -98,7 +94,7 @@ func (h *AdminHandler) RunRenewalsNow(c *fiber.Ctx) error {
 // ─── Organizations ─────────────────────────────────────────────────────────
 
 // ListOrganizations returns every organization on the platform, most recent
-// first. Simple offset pagination via ?page=&limit= (defaults 1/20).
+
 func (h *AdminHandler) ListOrganizations(c *fiber.Ctx) error {
 	page := c.QueryInt("page", 1)
 	limit := c.QueryInt("limit", 20)
@@ -161,9 +157,7 @@ type updateOrgRequest struct {
 	Plan            *models.PlanType `json:"plan"`
 }
 
-// UpdateOrganization patches whichever fields are provided — nil fields are
-// left untouched. Useful for e.g. manually bumping a customer's plan after a
-// support conversation, without them going through checkout again.
+
 func (h *AdminHandler) UpdateOrganization(c *fiber.Ctx) error {
 	id := c.Params("id")
 
@@ -197,11 +191,7 @@ func (h *AdminHandler) UpdateOrganization(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"organization": org})
 }
 
-// DeleteOrganization soft-deletes the org (GORM's default behavior on models
-// with a DeletedAt field) — this does NOT hard-delete or cascade to users,
-// vouchers, subscriptions etc. Add explicit cascading deletes/anonymization
-// here if that's actually what you want on org deletion; right now it just
-// hides the org from normal queries via deleted_at.
+// DeleteOrganization soft-deletes the org 
 func (h *AdminHandler) DeleteOrganization(c *fiber.Ctx) error {
 	id := c.Params("id")
 

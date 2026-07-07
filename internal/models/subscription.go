@@ -18,7 +18,7 @@ type MandateStatus string
 
 const (
 	MandateStatusNone    MandateStatus = ""
-	MandateStatusPending MandateStatus = "pending" // created, awaiting NIBSS token-payment authentication
+	MandateStatusPending MandateStatus = "pending" 
 	MandateStatusActive  MandateStatus = "active"
 	MandateStatusFailed  MandateStatus = "failed"
 )

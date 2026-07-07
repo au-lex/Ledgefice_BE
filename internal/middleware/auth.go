@@ -49,11 +49,7 @@ func Protected(secret string) fiber.Handler {
 
 func RequirePermission(perm string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		// Permissions are checked per-request from the DB-loaded department in handlers.
-		// This middleware is a lightweight signal; actual enforcement happens in handlers
-		// that call CurrentPermissions(c).
-		// For now, pass through — the guard above already authenticated the user.
-		// You can add a DB lookup here if you want strict middleware-level enforcement.
+	
 		_ = perm
 		return c.Next()
 	}
