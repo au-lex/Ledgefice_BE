@@ -85,23 +85,23 @@ func emailHeader(orgName string) string {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 </head>
-<body style="margin:0;padding:0;background:#09090b;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
-  <table width="100%%" cellpadding="0" cellspacing="0" style="background:#09090b;padding:40px 16px;">
+<body style="margin:0;padding:0;background:#f4f5f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <table width="100%%" cellpadding="0" cellspacing="0" style="background:#f4f5f7;padding:40px 16px;">
     <tr>
       <td align="center">
         <table width="100%%" cellpadding="0" cellspacing="0" style="max-width:520px;">
 
           <!-- Wordmark -->
           <tr>
-            <td style="padding-bottom:28px;">
-              <span style="font-size:15px;font-weight:700;color:#f4f4f5;letter-spacing:-0.5px;">Ledgefice</span>
-              <span style="font-size:13px;color:#52525b;margin-left:6px;">· %s</span>
+            <td style="padding-bottom:24px;">
+              <span style="font-size:16px;font-weight:700;color:#111827;letter-spacing:-0.3px;">Ledgefice</span>
+              <span style="font-size:13px;color:#9ca3af;margin-left:6px;">· %s</span>
             </td>
           </tr>
 
           <!-- Card open -->
           <tr>
-            <td style="background:#18181b;border:1px solid #27272a;border-radius:16px;padding:36px 32px;">
+            <td style="background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;padding:40px 36px;">
 `, orgName)
 }
 
@@ -113,7 +113,7 @@ func emailFooter() string {
           <!-- Footer -->
           <tr>
             <td style="padding-top:24px;">
-              <p style="margin:0;font-size:11px;color:#3f3f46;line-height:1.6;">
+              <p style="margin:0;font-size:12px;color:#9ca3af;line-height:1.6;">
                 © Ledgefice · Voucher Management System<br/>
                 You're receiving this because you have an account on Ledgefice.
               </p>
@@ -131,9 +131,9 @@ func emailFooter() string {
 func metaRow(label, value string) string {
 	return fmt.Sprintf(`
                 <tr>
-                  <td style="padding:14px 18px;border-bottom:1px solid #27272a;">
-                    <p style="margin:0 0 3px;font-size:10px;font-weight:500;color:#52525b;text-transform:uppercase;letter-spacing:0.8px;">%s</p>
-                    <p style="margin:0;font-size:13px;color:#e4e4e7;font-weight:500;">%s</p>
+                  <td style="padding:14px 18px;border-bottom:1px solid #f3f4f6;">
+                    <p style="margin:0 0 3px;font-size:11px;font-weight:600;color:#9ca3af;text-transform:uppercase;letter-spacing:0.6px;">%s</p>
+                    <p style="margin:0;font-size:14px;color:#111827;font-weight:500;">%s</p>
                   </td>
                 </tr>`, label, value)
 }
@@ -142,8 +142,8 @@ func ctaButton(href, label string) string {
 	return fmt.Sprintf(`
               <table cellpadding="0" cellspacing="0">
                 <tr>
-                  <td style="background:#f4f4f5;border-radius:10px;">
-                    <a href="%s" style="display:inline-block;padding:12px 28px;font-size:13px;font-weight:600;color:#09090b;text-decoration:none;">
+                  <td style="background:#111827;border-radius:8px;">
+                    <a href="%s" style="display:inline-block;padding:12px 28px;font-size:14px;font-weight:600;color:#ffffff;text-decoration:none;">
                       %s →
                     </a>
                   </td>
@@ -152,12 +152,12 @@ func ctaButton(href, label string) string {
 }
 
 func statusBadge(label, bg, color string) string {
-	return fmt.Sprintf(`<span style="display:inline-block;padding:4px 12px;border-radius:999px;background:%s;color:%s;font-size:11px;font-weight:600;letter-spacing:0.5px;">%s</span>`,
+	return fmt.Sprintf(`<span style="display:inline-block;padding:4px 12px;border-radius:999px;background:%s;color:%s;font-size:12px;font-weight:600;letter-spacing:0.3px;">%s</span>`,
 		bg, color, label)
 }
 
 func divider() string {
-	return `<tr><td style="padding:0;height:1px;background:#27272a;margin:20px 0;"></td></tr>`
+	return `<tr><td style="padding:0;height:1px;background:#f3f4f6;margin:20px 0;"></td></tr>`
 }
 
 // ─── Templates ────────────────────────────────────────────────────────────────
@@ -167,14 +167,14 @@ func (c *EmailClient) SendWelcome(toEmail, fullName, password, orgName, departme
 	loginURL := c.appURL + "/login"
 
 	html := emailHeader(orgName) + fmt.Sprintf(`
-              <p style="margin:0 0 6px;font-size:11px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:1px;">You're invited</p>
-              <h1 style="margin:0 0 10px;font-size:22px;font-weight:700;color:#f4f4f5;line-height:1.2;">Welcome, %s</h1>
-              <p style="margin:0 0 28px;font-size:13px;color:#71717a;line-height:1.7;">
-                Your account has been created on <strong style="color:#a1a1aa;">%s</strong>. Use the credentials below to sign in — you can update your password after your first login.
+              <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.8px;">You're invited</p>
+              <h1 style="margin:0 0 10px;font-size:22px;font-weight:700;color:#111827;line-height:1.3;">Welcome, %s</h1>
+              <p style="margin:0 0 28px;font-size:14px;color:#6b7280;line-height:1.7;">
+                Your account has been created on <strong style="color:#374151;">%s</strong>. Use the credentials below to sign in — you can update your password after your first login.
               </p>
 
               <!-- Credentials -->
-              <table width="100%%" cellpadding="0" cellspacing="0" style="background:#09090b;border:1px solid #27272a;border-radius:10px;margin-bottom:28px;">
+              <table width="100%%" cellpadding="0" cellspacing="0" style="background:#f9fafb;border:1px solid #f3f4f6;border-radius:8px;margin-bottom:28px;">
                 %s
                 %s
                 %s
@@ -182,12 +182,12 @@ func (c *EmailClient) SendWelcome(toEmail, fullName, password, orgName, departme
 
               %s
 
-              <p style="margin:24px 0 0;font-size:12px;color:#3f3f46;line-height:1.6;">
+              <p style="margin:24px 0 0;font-size:12px;color:#9ca3af;line-height:1.6;">
                 If you weren't expecting this, you can safely ignore it. This invite was sent by your organisation admin.
               </p>`,
 		fullName, orgName,
 		metaRow("Email", toEmail),
-		metaRow("Temporary Password", fmt.Sprintf(`<span style="font-family:monospace;letter-spacing:1px;">%s</span>`, password)),
+		metaRow("Temporary Password", fmt.Sprintf(`<span style="font-family:monospace;letter-spacing:0.5px;">%s</span>`, password)),
 		metaRow("Department", department),
 		ctaButton(loginURL, "Log in to Ledgefice"),
 	) + emailFooter()
@@ -200,15 +200,15 @@ func (c *EmailClient) SendPasswordReset(toEmail, fullName, resetToken string) er
 	resetURL := fmt.Sprintf("%s/reset-password?token=%s", c.appURL, resetToken)
 
 	html := emailHeader("Account Security") + fmt.Sprintf(`
-              <p style="margin:0 0 6px;font-size:11px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:1px;">Password Reset</p>
-              <h1 style="margin:0 0 10px;font-size:22px;font-weight:700;color:#f4f4f5;line-height:1.2;">Reset your password</h1>
-              <p style="margin:0 0 28px;font-size:13px;color:#71717a;line-height:1.7;">
-                Hi %s, we received a request to reset the password for your Ledgefice account. Click the button below — this link expires in <strong style="color:#a1a1aa;">30 minutes</strong>.
+              <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.8px;">Password Reset</p>
+              <h1 style="margin:0 0 10px;font-size:22px;font-weight:700;color:#111827;line-height:1.3;">Reset your password</h1>
+              <p style="margin:0 0 28px;font-size:14px;color:#6b7280;line-height:1.7;">
+                Hi %s, we received a request to reset the password for your Ledgefice account. Click the button below — this link expires in <strong style="color:#374151;">30 minutes</strong>.
               </p>
 
               %s
 
-              <p style="margin:24px 0 0;font-size:12px;color:#3f3f46;line-height:1.6;">
+              <p style="margin:24px 0 0;font-size:12px;color:#9ca3af;line-height:1.6;">
                 If you didn't request a password reset, you can safely ignore this email. Your password won't change.
               </p>`,
 		fullName,
@@ -225,20 +225,20 @@ func (c *EmailClient) SendVoucherSubmitted(
 	reviewURL := fmt.Sprintf("%s/vouchers/%s", c.appURL, voucherRef)
 
 	html := emailHeader(orgName) + fmt.Sprintf(`
-              <p style="margin:0 0 6px;font-size:11px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:1px;">Action Required</p>
-              <h1 style="margin:0 0 10px;font-size:22px;font-weight:700;color:#f4f4f5;line-height:1.2;">Voucher awaiting your approval</h1>
-              <p style="margin:0 0 24px;font-size:13px;color:#71717a;line-height:1.7;">
-                Hi %s, <strong style="color:#a1a1aa;">%s</strong> has submitted a voucher that requires your review.
+              <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.8px;">Action Required</p>
+              <h1 style="margin:0 0 10px;font-size:22px;font-weight:700;color:#111827;line-height:1.3;">Voucher awaiting your approval</h1>
+              <p style="margin:0 0 24px;font-size:14px;color:#6b7280;line-height:1.7;">
+                Hi %s, <strong style="color:#374151;">%s</strong> has submitted a voucher that requires your review.
               </p>
 
               <!-- Voucher meta -->
-              <table width="100%%" cellpadding="0" cellspacing="0" style="background:#09090b;border:1px solid #27272a;border-radius:10px;margin-bottom:28px;">
+              <table width="100%%" cellpadding="0" cellspacing="0" style="background:#f9fafb;border:1px solid #f3f4f6;border-radius:8px;margin-bottom:28px;">
                 %s
                 %s
                 %s
                 <tr>
                   <td style="padding:14px 18px;">
-                    <p style="margin:0 0 3px;font-size:10px;font-weight:500;color:#52525b;text-transform:uppercase;letter-spacing:0.8px;">Status</p>
+                    <p style="margin:0 0 3px;font-size:11px;font-weight:600;color:#9ca3af;text-transform:uppercase;letter-spacing:0.6px;">Status</p>
                     <p style="margin:0;">%s</p>
                   </td>
                 </tr>
@@ -246,14 +246,14 @@ func (c *EmailClient) SendVoucherSubmitted(
 
               %s
 
-              <p style="margin:24px 0 0;font-size:12px;color:#3f3f46;line-height:1.6;">
+              <p style="margin:24px 0 0;font-size:12px;color:#9ca3af;line-height:1.6;">
                 You can approve, query, or decline this voucher from your dashboard.
               </p>`,
 		approverName, submitterName,
 		metaRow("Reference", voucherRef),
 		metaRow("Type", voucherType),
 		metaRow("Amount", amount),
-		statusBadge("Awaiting Approval", "#1c1917", "#fbbf24"),
+		statusBadge("Awaiting Approval", "#fef3c7", "#92400e"),
 		ctaButton(reviewURL, "Review Voucher"),
 	) + emailFooter()
 
@@ -267,19 +267,19 @@ func (c *EmailClient) SendVoucherApproved(
 	viewURL := fmt.Sprintf("%s/vouchers/%s", c.appURL, voucherRef)
 
 	html := emailHeader(orgName) + fmt.Sprintf(`
-              <p style="margin:0 0 6px;font-size:11px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:1px;">Approved</p>
-              <h1 style="margin:0 0 10px;font-size:22px;font-weight:700;color:#f4f4f5;line-height:1.2;">Your voucher has been approved</h1>
-              <p style="margin:0 0 24px;font-size:13px;color:#71717a;line-height:1.7;">
+              <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.8px;">Approved</p>
+              <h1 style="margin:0 0 10px;font-size:22px;font-weight:700;color:#111827;line-height:1.3;">Your voucher has been approved</h1>
+              <p style="margin:0 0 24px;font-size:14px;color:#6b7280;line-height:1.7;">
                 Hi %s, your voucher has passed all approval stages and is now closed.
               </p>
 
-              <table width="100%%" cellpadding="0" cellspacing="0" style="background:#09090b;border:1px solid #27272a;border-radius:10px;margin-bottom:28px;">
+              <table width="100%%" cellpadding="0" cellspacing="0" style="background:#f9fafb;border:1px solid #f3f4f6;border-radius:8px;margin-bottom:28px;">
                 %s
                 %s
                 %s
                 <tr>
                   <td style="padding:14px 18px;">
-                    <p style="margin:0 0 3px;font-size:10px;font-weight:500;color:#52525b;text-transform:uppercase;letter-spacing:0.8px;">Status</p>
+                    <p style="margin:0 0 3px;font-size:11px;font-weight:600;color:#9ca3af;text-transform:uppercase;letter-spacing:0.6px;">Status</p>
                     <p style="margin:0;">%s</p>
                   </td>
                 </tr>
@@ -287,14 +287,14 @@ func (c *EmailClient) SendVoucherApproved(
 
               %s
 
-              <p style="margin:24px 0 0;font-size:12px;color:#3f3f46;line-height:1.6;">
+              <p style="margin:24px 0 0;font-size:12px;color:#9ca3af;line-height:1.6;">
                 This voucher has been recorded against your department's spend and is fully auditable.
               </p>`,
 		requesterName,
 		metaRow("Reference", voucherRef),
 		metaRow("Type", voucherType),
 		metaRow("Amount", amount),
-		statusBadge("Approved", "#052e16", "#6ee7b7"),
+		statusBadge("Approved", "#d1fae5", "#065f46"),
 		ctaButton(viewURL, "View Voucher"),
 	) + emailFooter()
 
@@ -308,37 +308,37 @@ func (c *EmailClient) SendVoucherQueried(
 	replyURL := fmt.Sprintf("%s/vouchers/%s", c.appURL, voucherRef)
 
 	html := emailHeader(orgName) + fmt.Sprintf(`
-              <p style="margin:0 0 6px;font-size:11px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:1px;">Query</p>
-              <h1 style="margin:0 0 10px;font-size:22px;font-weight:700;color:#f4f4f5;line-height:1.2;">Your voucher has been queried</h1>
-              <p style="margin:0 0 24px;font-size:13px;color:#71717a;line-height:1.7;">
-                Hi %s, <strong style="color:#a1a1aa;">%s</strong> has raised a query on your voucher <strong style="color:#a1a1aa;">%s</strong>. Please review and respond.
+              <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.8px;">Query</p>
+              <h1 style="margin:0 0 10px;font-size:22px;font-weight:700;color:#111827;line-height:1.3;">Your voucher has been queried</h1>
+              <p style="margin:0 0 24px;font-size:14px;color:#6b7280;line-height:1.7;">
+                Hi %s, <strong style="color:#374151;">%s</strong> has raised a query on your voucher <strong style="color:#374151;">%s</strong>. Please review and respond.
               </p>
 
               <!-- Query note -->
-              <table width="100%%" cellpadding="0" cellspacing="0" style="background:#09090b;border:1px solid #27272a;border-radius:10px;margin-bottom:28px;">
+              <table width="100%%" cellpadding="0" cellspacing="0" style="background:#f9fafb;border:1px solid #f3f4f6;border-radius:8px;margin-bottom:28px;">
                 %s
                 <tr>
-                  <td style="padding:14px 18px;border-bottom:1px solid #27272a;">
-                    <p style="margin:0 0 3px;font-size:10px;font-weight:500;color:#52525b;text-transform:uppercase;letter-spacing:0.8px;">Status</p>
+                  <td style="padding:14px 18px;border-bottom:1px solid #f3f4f6;">
+                    <p style="margin:0 0 3px;font-size:11px;font-weight:600;color:#9ca3af;text-transform:uppercase;letter-spacing:0.6px;">Status</p>
                     <p style="margin:0;">%s</p>
                   </td>
                 </tr>
                 <tr>
                   <td style="padding:14px 18px;">
-                    <p style="margin:0 0 6px;font-size:10px;font-weight:500;color:#52525b;text-transform:uppercase;letter-spacing:0.8px;">Query note</p>
-                    <p style="margin:0;font-size:13px;color:#e4e4e7;line-height:1.6;font-style:italic;">"%s"</p>
+                    <p style="margin:0 0 6px;font-size:11px;font-weight:600;color:#9ca3af;text-transform:uppercase;letter-spacing:0.6px;">Query note</p>
+                    <p style="margin:0;font-size:14px;color:#374151;line-height:1.6;font-style:italic;">"%s"</p>
                   </td>
                 </tr>
               </table>
 
               %s
 
-              <p style="margin:24px 0 0;font-size:12px;color:#3f3f46;line-height:1.6;">
+              <p style="margin:24px 0 0;font-size:12px;color:#9ca3af;line-height:1.6;">
                 Once you respond, the voucher will re-enter the approval chain from where it was queried.
               </p>`,
 		requesterName, approverName, voucherRef,
 		metaRow("Reference", voucherRef),
-		statusBadge("Queried", "#1c1917", "#fbbf24"),
+		statusBadge("Queried", "#fef3c7", "#92400e"),
 		queryNote,
 		ctaButton(replyURL, "Respond to Query"),
 	) + emailFooter()
@@ -353,38 +353,38 @@ func (c *EmailClient) SendVoucherDeclined(
 	viewURL := fmt.Sprintf("%s/vouchers/%s", c.appURL, voucherRef)
 
 	html := emailHeader(orgName) + fmt.Sprintf(`
-              <p style="margin:0 0 6px;font-size:11px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:1px;">Declined</p>
-              <h1 style="margin:0 0 10px;font-size:22px;font-weight:700;color:#f4f4f5;line-height:1.2;">Your voucher has been declined</h1>
-              <p style="margin:0 0 24px;font-size:13px;color:#71717a;line-height:1.7;">
-                Hi %s, <strong style="color:#a1a1aa;">%s</strong> has declined your voucher <strong style="color:#a1a1aa;">%s</strong>.
+              <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:0.8px;">Declined</p>
+              <h1 style="margin:0 0 10px;font-size:22px;font-weight:700;color:#111827;line-height:1.3;">Your voucher has been declined</h1>
+              <p style="margin:0 0 24px;font-size:14px;color:#6b7280;line-height:1.7;">
+                Hi %s, <strong style="color:#374151;">%s</strong> has declined your voucher <strong style="color:#374151;">%s</strong>.
               </p>
 
-              <table width="100%%" cellpadding="0" cellspacing="0" style="background:#09090b;border:1px solid #27272a;border-radius:10px;margin-bottom:28px;">
+              <table width="100%%" cellpadding="0" cellspacing="0" style="background:#f9fafb;border:1px solid #f3f4f6;border-radius:8px;margin-bottom:28px;">
                 %s
                 %s
                 <tr>
-                  <td style="padding:14px 18px;border-bottom:1px solid #27272a;">
-                    <p style="margin:0 0 3px;font-size:10px;font-weight:500;color:#52525b;text-transform:uppercase;letter-spacing:0.8px;">Status</p>
+                  <td style="padding:14px 18px;border-bottom:1px solid #f3f4f6;">
+                    <p style="margin:0 0 3px;font-size:11px;font-weight:600;color:#9ca3af;text-transform:uppercase;letter-spacing:0.6px;">Status</p>
                     <p style="margin:0;">%s</p>
                   </td>
                 </tr>
                 <tr>
                   <td style="padding:14px 18px;">
-                    <p style="margin:0 0 6px;font-size:10px;font-weight:500;color:#52525b;text-transform:uppercase;letter-spacing:0.8px;">Reason</p>
-                    <p style="margin:0;font-size:13px;color:#e4e4e7;line-height:1.6;font-style:italic;">"%s"</p>
+                    <p style="margin:0 0 6px;font-size:11px;font-weight:600;color:#9ca3af;text-transform:uppercase;letter-spacing:0.6px;">Reason</p>
+                    <p style="margin:0;font-size:14px;color:#374151;line-height:1.6;font-style:italic;">"%s"</p>
                   </td>
                 </tr>
               </table>
 
               %s
 
-              <p style="margin:24px 0 0;font-size:12px;color:#3f3f46;line-height:1.6;">
+              <p style="margin:24px 0 0;font-size:12px;color:#9ca3af;line-height:1.6;">
                 If you believe this was an error, contact your department head or raise a new voucher with the necessary corrections.
               </p>`,
 		requesterName, approverName, voucherRef,
 		metaRow("Reference", voucherRef),
 		metaRow("Type", voucherType),
-		statusBadge("Declined", "#1f0f0f", "#fca5a5"),
+		statusBadge("Declined", "#fee2e2", "#991b1b"),
 		reason,
 		ctaButton(viewURL, "View Voucher"),
 	) + emailFooter()
