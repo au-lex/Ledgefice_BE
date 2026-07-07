@@ -253,3 +253,59 @@ func parsePositiveInt(s string) (int, error) {
 	}
 	return n, nil
 }
+
+type changePasswordInput struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
+
+func (h *AuthHandler) ChangePassword(c *fiber.Ctx) error {
+	userID := middleware.CurrentUserID(c)
+
+	var input changePasswordInput
+	if err := c.BodyParser(&input); err != nil {
+		return utils.BadRequest(c, "invalid request body")
+	}
+	if input.CurrentPassword == "" || input.NewPassword == "" {
+		return utils.BadRequest(c, "current_password and new_password are required")
+	}
+	if len(input.NewPassword) < 8 {
+		return utils.BadRequest(c, "new password must be at least 8 characters")
+	}
+	if input.CurrentPassword == input.NewPassword {
+		return utils.BadRequest(c, "new password must be different from current password")
+	}
+
+	var user models.User
+	if err := database.DB.First(&user, "id = ?", userID).Error; err != nil {
+		return utils.NotFound(c, "user not found")
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(input.CurrentPassword)); err != nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "current password is incorrect"})
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(input.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return utils.InternalError(c, err)
+	}
+
+	user.Password = string(hash)
+	if err := database.DB.Save(&user).Error; err != nil {
+		return utils.InternalError(c, err)
+	}
+
+	services.WriteAudit(services.AuditInput{
+		OrganizationID: &user.OrganizationID,
+		ActorID:        &userID,
+		ActorEmail:     middleware.CurrentEmail(c),
+		Action:         models.AuditActionUpdate,
+		Module:         models.AuditModuleSystem,
+		ResourceID:     user.ID.String(),
+		Description:    "Password changed.",
+		IPAddress:      middleware.ClientIP(c),
+		UserAgent:      c.Get("User-Agent"),
+	})
+
+	return utils.OK(c, fiber.Map{"message": "password updated successfully"})
+}

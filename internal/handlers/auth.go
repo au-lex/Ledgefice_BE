@@ -78,7 +78,12 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 		deptName = user.Department.Name
 	}
 
-	token, err := utils.GenerateToken(user.ID, user.Email, org.ID, deptName, h.JWTSecret, h.JWTExpiresIn)
+	perms := models.PermissionMap{}
+	if user.Department != nil {
+		perms = user.Department.Permissions
+	}
+
+	token, err := utils.GenerateToken(user.ID, user.Email, org.ID, deptName, perms, h.JWTSecret, h.JWTExpiresIn)
 	if err != nil {
 		return utils.InternalError(c, err)
 	}
@@ -99,11 +104,6 @@ func (h *AuthHandler) Login(c *fiber.Ctx) error {
 		IPAddress:      middleware.ClientIP(c),
 		UserAgent:      c.Get("User-Agent"),
 	})
-
-	perms := models.PermissionMap{}
-	if user.Department != nil {
-		perms = user.Department.Permissions
-	}
 
 	return c.JSON(fiber.Map{
 		"token": token,
@@ -171,8 +171,6 @@ func (h *AuthHandler) Me(c *fiber.Ctx) error {
 		},
 	})
 }
-
-
 
 func (h *AuthHandler) UpdateMe(c *fiber.Ctx) error {
 	userID := middleware.CurrentUserID(c)

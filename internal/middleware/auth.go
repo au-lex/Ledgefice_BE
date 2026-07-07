@@ -12,10 +12,11 @@ import (
 // ─── JWT Claims ───────────────────────────────────────────────────────────────
 
 type Claims struct {
-	UserID         uuid.UUID `json:"user_id"`
-	Email          string    `json:"email"`
-	OrganizationID uuid.UUID `json:"organization_id"`
-	Department     string    `json:"department"`
+	UserID         uuid.UUID            `json:"user_id"`
+	Email          string               `json:"email"`
+	OrganizationID uuid.UUID            `json:"organization_id"`
+	Department     string               `json:"department"`
+	Permissions    models.PermissionMap `json:"permissions"`
 	jwt.RegisteredClaims
 }
 
@@ -41,6 +42,7 @@ func Protected(secret string) fiber.Handler {
 		c.Locals("email", claims.Email)
 		c.Locals("orgID", claims.OrganizationID)
 		c.Locals("department", claims.Department)
+		c.Locals("permissions", claims.Permissions)
 		return c.Next()
 	}
 }
@@ -49,8 +51,16 @@ func Protected(secret string) fiber.Handler {
 
 func RequirePermission(perm string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-	
-		_ = perm
+		perms, ok := c.Locals("permissions").(models.PermissionMap)
+		if !ok {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "no permissions on token"})
+		}
+		if !perms[perm] {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+				"error":    "You don't have permission to perform this action. Contact your organization admin if you believe this is a mistake.",
+				"required": perm,
+			})
+		}
 		return c.Next()
 	}
 }

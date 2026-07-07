@@ -8,27 +8,27 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
-	"github.com/golang-jwt/jwt/v4"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
-	// "github.com/ledgefice/internal/middleware"
+	"github.com/ledgefice/internal/models"
 )
 
 // ─── JWT ─────────────────────────────────────────────────────────────────────
 type TokenClaims struct {
-	UserID         uuid.UUID `json:"user_id"`
-	Email          string    `json:"email"`
-	OrganizationID uuid.UUID `json:"organization_id"`
-	Department     string    `json:"department"`
+	UserID         uuid.UUID            `json:"user_id"`
+	Email          string               `json:"email"`
+	OrganizationID uuid.UUID            `json:"organization_id"`
+	Department     string               `json:"department"`
+	Permissions    models.PermissionMap `json:"permissions"`
 	jwt.RegisteredClaims
 }
 
-// GenerateToken creates a signed JWT embedding the user's org so every
-// downstream request can scope queries without an extra DB lookup.
 func GenerateToken(
 	userID uuid.UUID,
 	email string,
 	orgID uuid.UUID,
 	department string,
+	permissions models.PermissionMap,
 	secret string,
 	expiresIn string,
 ) (string, error) {
@@ -42,6 +42,7 @@ func GenerateToken(
 		Email:          email,
 		OrganizationID: orgID,
 		Department:     department,
+		Permissions:    permissions,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(duration)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -55,9 +56,9 @@ func GenerateToken(
 // ─── Pagination ───────────────────────────────────────────────────────────────
 
 type Pagination struct {
-	Page    int `json:"page"`
-	Limit   int `json:"limit"`
-	Offset  int `json:"-"`
+	Page   int `json:"page"`
+	Limit  int `json:"limit"`
+	Offset int `json:"-"`
 }
 
 func ParsePagination(c *fiber.Ctx) Pagination {
@@ -99,8 +100,6 @@ func Paginated(data interface{}, total int64, pg Pagination) PagedResponse {
 }
 
 // ─── Voucher Code Generator ───────────────────────────────────────────────────
-// Pattern:  <TYPE_PREFIX>-<YEAR>-<SEQUENCE>
-// e.g.      CPY-2024-0041
 
 var typePrefixes = map[string]string{
 	"Contractor Payment": "CPY",
@@ -115,7 +114,7 @@ func VoucherCode(typeName string) string {
 		prefix = strings.ToUpper(typeName[:3])
 	}
 	year := time.Now().Year()
-	seq := rand.Intn(9000) + 1000 // placeholder — replace with DB sequence
+	seq := rand.Intn(9000) + 1000
 	return fmt.Sprintf("%s-%d-%04d", prefix, year, seq)
 }
 
@@ -136,5 +135,3 @@ func InternalError(c *fiber.Ctx, err error) error {
 func OK(c *fiber.Ctx, data interface{}) error {
 	return c.JSON(fiber.Map{"data": data})
 }
-
-

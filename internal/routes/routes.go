@@ -42,6 +42,8 @@ func RegisterRoutes(app *fiber.App, jwtSecret string, imgSvc *services.ImageServ
 
 	api.Get("/organizations/me", guard, onboarding.GetMe)
 	api.Put("/organizations/me", guard, onboarding.UpdateMe)
+	api.Post("/organizations/change-password", guard, auth.ChangePassword)
+	
 
 	// Logged-in org's own saved card — lookup + delete. Reg
 	api.Get("/subscriptions/me/token", guard, subs.MyToken)
