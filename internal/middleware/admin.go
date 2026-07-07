@@ -15,8 +15,7 @@ type AdminClaims struct {
 	jwt.RegisteredClaims
 }
 
-// RequireAdmin verifies the token was actually issued by AdminLogin, not a
-// regular user login — checks both signature validity AND TokenType == "admin".
+
 func RequireAdmin(secret string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		auth := c.Get("Authorization")

@@ -8,6 +8,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/ledgefice/internal/database"
+	"github.com/ledgefice/internal/middleware"
 	"github.com/ledgefice/internal/models"
 	"github.com/ledgefice/internal/services"
 	"github.com/ledgefice/pkg/utils"
@@ -28,9 +29,9 @@ type onboardingInput struct {
 }
 
 // Setup NEVER creates an Organization/User/Department directly — every plan
-// requires payment, so this only ever creates a PendingSignup + Nomba
-// checkout order. The actual account gets created by PaymentHandler's webhook
-// once payment_success is confirmed 
+// requires a paid subscription, so we create a PendingSignup and redirect the
+// user to Nomba's checkout page. Once payment is confirmed, the webhook will
+// create the actual Organization/User/Department.
 func (h *OnboardingHandler) Setup(c *fiber.Ctx) error {
 	var input onboardingInput
 	if err := c.BodyParser(&input); err != nil {
@@ -127,4 +128,128 @@ func (h *OnboardingHandler) Setup(c *fiber.Ctx) error {
 		"checkout_link":   result.CheckoutLink,
 		"order_reference": orderRef,
 	})
+}
+
+
+func (h *OnboardingHandler) GetMe(c *fiber.Ctx) error {
+	orgID := middleware.CurrentOrgID(c)
+
+	var org models.Organization
+	if err := database.DB.First(&org, "id = ?", orgID).Error; err != nil {
+		return utils.NotFound(c, "organization not found")
+	}
+
+	planCfg := models.GetPlanConfig(org.Plan)
+
+	return utils.OK(c, fiber.Map{
+		"id":                org.ID,
+		"name":              org.Name,
+		"logo_url":          org.LogoURL,
+		"number_of_workers": org.NumberOfWorkers,
+		"plan":              org.Plan,
+		"owner_id":          org.OwnerID,
+		"limits": fiber.Map{
+			"max_departments": planCfg.MaxDepartments,
+			"max_users":       planCfg.MaxUsers,
+		},
+		"features": planCfg.Features,
+	})
+}
+
+
+func (h *OnboardingHandler) UpdateMe(c *fiber.Ctx) error {
+	orgID := middleware.CurrentOrgID(c)
+	userID := middleware.CurrentUserID(c)
+
+	var org models.Organization
+	if err := database.DB.First(&org, "id = ?", orgID).Error; err != nil {
+		return utils.NotFound(c, "organization not found")
+	}
+
+	// Only the org owner can edit organization details.
+	if org.OwnerID == nil || *org.OwnerID != userID {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "only the organization owner can update these details"})
+	}
+
+	changed := []string{}
+
+	name := strings.TrimSpace(c.FormValue("name"))
+	if name != "" && name != org.Name {
+		var existingOrg models.Organization
+		if err := database.DB.Where("name = ? AND id != ?", name, org.ID).First(&existingOrg).Error; err == nil {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "organization name already in use"})
+		}
+		org.Name = name
+		changed = append(changed, "name")
+	}
+
+	if workersStr := c.FormValue("number_of_workers"); workersStr != "" {
+		n, perr := parsePositiveInt(workersStr)
+		if perr != nil {
+			return utils.BadRequest(c, "number_of_workers must be a valid positive integer")
+		}
+		org.NumberOfWorkers = n
+		changed = append(changed, "number_of_workers")
+	}
+
+	fileHeader, ferr := c.FormFile("logo")
+	if ferr == nil && fileHeader != nil {
+		file, err := fileHeader.Open()
+		if err != nil {
+			return utils.BadRequest(c, "could not open uploaded logo")
+		}
+		url, _, err := h.Images.Upload(file, fileHeader, "ledgefice/logos")
+		if err != nil {
+			return utils.InternalError(c, err)
+		}
+		org.LogoURL = url
+		changed = append(changed, "logo")
+	}
+
+	if len(changed) == 0 {
+		return utils.BadRequest(c, "no changes provided")
+	}
+
+	if err := database.DB.Save(&org).Error; err != nil {
+		return utils.InternalError(c, err)
+	}
+
+	services.WriteAudit(services.AuditInput{
+		OrganizationID: &org.ID,
+		ActorID:        &userID,
+		ActorEmail:     middleware.CurrentEmail(c),
+		Action:         models.AuditActionUpdate,
+		Module:         models.AuditModuleSystem,
+		ResourceID:     org.ID.String(),
+		Description:    "Organization details updated (" + strings.Join(changed, ", ") + ").",
+		IPAddress:      middleware.ClientIP(c),
+		UserAgent:      c.Get("User-Agent"),
+	})
+
+	planCfg := models.GetPlanConfig(org.Plan)
+
+	return utils.OK(c, fiber.Map{
+		"id":                org.ID,
+		"name":              org.Name,
+		"logo_url":          org.LogoURL,
+		"number_of_workers": org.NumberOfWorkers,
+		"plan":              org.Plan,
+		"owner_id":          org.OwnerID,
+		"limits": fiber.Map{
+			"max_departments": planCfg.MaxDepartments,
+			"max_users":       planCfg.MaxUsers,
+		},
+		"features": planCfg.Features,
+	})
+}
+
+func parsePositiveInt(s string) (int, error) {
+	n := 0
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0, fmt.Errorf("invalid number: %s", s)
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n, nil
 }

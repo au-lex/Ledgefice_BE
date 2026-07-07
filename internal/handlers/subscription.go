@@ -17,17 +17,7 @@ type SubscriptionHandler struct {
 	Nomba *services.NombaService
 }
 
-// Status is a public endpoint — the onboarding owner isn't logged in yet
-// when polling this, so no auth guard.
-// Status is polled by the frontend after checkout redirect. Account creation
-// is now deferred until payment_success (see PaymentHandler.NombaWebhook), so
-// there are three possible states here, not two:
-//   - No Subscription AND no PendingSignup found → genuinely invalid ref (404)
-//   - No Subscription but a PendingSignup exists → still waiting on payment;
-//     the account doesn't exist yet, report "awaiting_payment"
-//   - Subscription exists → normal status (pending/paid/failed), and once
-//     paid, organization_id/owner_id are included so the frontend can move
-//     on to login instead of just showing a generic "success" screen.
+
 func (h *SubscriptionHandler) Status(c *fiber.Ctx) error {
 	ref := c.Params("ref")
 
@@ -79,11 +69,7 @@ func (h *SubscriptionHandler) Token(c *fiber.Ctx) error {
 	})
 }
 
-// MyToken looks up the CURRENT logged-in org's saved card — the version you
-// want for an individual account, since the frontend won't have an old
-// order_reference lying around once the user is authenticated. Assumes
-// middleware.Protected sets "organization_id" in c.Locals — adjust the key
-// below if your JWT claims use a different name.
+// MyToken looks up the CURRENT logged-in org's saved card — 
 func (h *SubscriptionHandler) MyToken(c *fiber.Ctx) error {
 	orgID := middleware.CurrentOrgID(c)
 	if orgID == uuid.Nil {
@@ -110,8 +96,7 @@ func (h *SubscriptionHandler) MyToken(c *fiber.Ctx) error {
 	})
 }
 
-// DeleteMyToken removes the org's saved card — both from Nomba's vault and
-// from the local subscription record, so renewals stop trying to charge it.
+// DeleteMyToken removes the org's saved card. 
 func (h *SubscriptionHandler) DeleteMyToken(c *fiber.Ctx) error {
 	orgID := middleware.CurrentOrgID(c)
 	if orgID == uuid.Nil {
@@ -134,61 +119,17 @@ func (h *SubscriptionHandler) DeleteMyToken(c *fiber.Ctx) error {
 	sub.CardType = ""
 	sub.CardPan = ""
 	if err := database.DB.Save(&sub).Error; err != nil {
+		// Card is gone on Nomba's side at this point — surfacing this so it's
+		// not silently inconsistent, but don't treat it as a failed delete.
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "card deleted on Nomba but failed to clear local record"})
 	}
 
 	return c.JSON(fiber.Map{"message": "card removed"})
 }
 
-// MyLiveToken queries Nomba directly (not the local DB) for the logged-in org
-// owner's tokenized card — use this right before showing a "cancel subscription /
-// remove card" screen, so the user sees the real current state even if the local
-// DB drifted out of sync with Nomba's vault.
-func (h *SubscriptionHandler) MyLiveToken(c *fiber.Ctx) error {
-	orgID := middleware.CurrentOrgID(c)
-	if orgID == uuid.Nil {
-		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "missing organization context"})
-	}
 
-	var org models.Organization
-	if err := database.DB.Where("id = ?", orgID).First(&org).Error; err != nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "organization not found"})
-	}
 
-	var owner models.User
-	if err := database.DB.Where("id = ?", *org.OwnerID).First(&owner).Error; err != nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "owner not found"})
-	}
-
-	cards, err := h.Nomba.GetSavedCards(owner.Email)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to fetch card from Nomba: " + err.Error()})
-	}
-
-	if len(cards) == 0 {
-		return c.JSON(fiber.Map{
-			"has_token": false,
-			"message":   "no tokenized card found on Nomba for this account",
-		})
-	}
-
-	out := make([]fiber.Map, 0, len(cards))
-	for _, card := range cards {
-		out = append(out, fiber.Map{
-			"token_key": card.TokenKey,
-			"card_type": card.CardType,
-			"card_pan":  card.CardPan,
-		})
-	}
-
-	return c.JSON(fiber.Map{
-		"has_token": true,
-		"cards":     out,
-	})
-}
-
-// ListTokens returns every subscription that has a saved tokenized card —
-// useful for an admin view or just confirming tokens are landing correctly.
+// ListTokens returns every subscription that has a saved tokenized card
 func (h *SubscriptionHandler) ListTokens(c *fiber.Ctx) error {
 	var subs []models.Subscription
 	if err := database.DB.
@@ -217,11 +158,7 @@ func (h *SubscriptionHandler) ListTokens(c *fiber.Ctx) error {
 }
 
 // Renew charges the previously tokenized card for a new billing cycle, using the
-// org's existing Subscription record. Triggered manually for now — wire this into
-// a cron job once you're ready to automate monthly renewals.
-// Renew handles both renewal paths: tokenized card (instant, webhook confirms
-// async) and Direct Debit mandate (DebitMandate call itself returns the final
-// status synchronously — no webhook involved for this path, per Nomba's docs).
+// org's existing Subscription record. 
 func (h *SubscriptionHandler) Renew(c *fiber.Ctx) error {
 	id := c.Params("id") // subscription UUID
 
@@ -321,5 +258,225 @@ func (h *SubscriptionHandler) Renew(c *fiber.Ctx) error {
 		"order_reference": newOrderRef,
 		"charge_status":   result.Status,
 		"charge_message":  result.Message,
+	})
+}
+
+
+
+
+func (h *SubscriptionHandler) MyPlan(c *fiber.Ctx) error {
+	orgID := middleware.CurrentOrgID(c)
+	if orgID == uuid.Nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "missing organization context"})
+	}
+
+	var org models.Organization
+	if err := database.DB.Where("id = ?", orgID).First(&org).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "organization not found"})
+	}
+
+	planOrder := []models.PlanType{
+		models.PlanStarter,
+		models.PlanBusiness,
+		models.PlanEnterprise,
+	}
+
+	plans := make([]fiber.Map, 0, len(planOrder))
+	for _, planType := range planOrder {
+		cfg := models.PlanConfigs[planType]
+		plans = append(plans, fiber.Map{
+			"plan":       planType,
+			"config":     cfg,
+			"is_current": planType == org.Plan,
+		})
+	}
+
+	resp := fiber.Map{
+		"current_plan": org.Plan,
+		"plans":        plans,
+	}
+
+	// Latest PAID subscription — this is the one actually driving org.Plan
+	// and renewal/dunning behavior. A pending/failed checkout in progress
+	// should never override this in the response.
+	var paidSub models.Subscription
+	if database.DB.
+		Where("organization_id = ? AND status = ?", orgID, models.SubscriptionStatusPaid).
+		Order("paid_at DESC").
+		First(&paidSub).Error == nil {
+		resp["subscription"] = fiber.Map{
+			"id":              paidSub.ID,
+			"plan":            paidSub.Plan,
+			"status":          paidSub.Status,
+			"order_reference": paidSub.OrderReference,
+			"amount":          paidSub.Amount,
+			"currency":        paidSub.Currency,
+			"paid_at":         paidSub.PaidAt,
+			"renews_at":       paidSub.RenewsAt,
+			"dunning_stage":   paidSub.DunningStage,
+			"cancelled_at":    paidSub.CancelledAt,
+		}
+	}
+
+	// Separately surface any checkout that's still pending, so the frontend
+	// can show "Upgrade to X in progress" without corrupting the main
+	// subscription block above.
+	var pendingSub models.Subscription
+	if database.DB.
+		Where("organization_id = ? AND status = ?", orgID, models.SubscriptionStatusPending).
+		Order("created_at DESC").
+		First(&pendingSub).Error == nil {
+		resp["pending_upgrade"] = fiber.Map{
+			"id":              pendingSub.ID,
+			"plan":            pendingSub.Plan,
+			"order_reference": pendingSub.OrderReference,
+			"amount":          pendingSub.Amount,
+			"currency":        pendingSub.Currency,
+			"created_at":      pendingSub.CreatedAt,
+		}
+	}
+
+	return c.JSON(resp)
+}
+
+type UpgradeRequest struct {
+	Plan         models.PlanType `json:"plan"`
+	BillingCycle string          `json:"billing_cycle"` // "monthly" or "yearly"
+}
+
+func (h *SubscriptionHandler) Upgrade(c *fiber.Ctx) error {
+	orgID := middleware.CurrentOrgID(c)
+	if orgID == uuid.Nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "missing organization context"})
+	}
+
+	var req UpgradeRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+	}
+
+	cfg, ok := models.PlanConfigs[req.Plan]
+	if !ok {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "unknown plan"})
+	}
+
+	var org models.Organization
+	if err := database.DB.Where("id = ?", orgID).First(&org).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "organization not found"})
+	}
+
+	if org.Plan == req.Plan {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "organization is already on this plan"})
+	}
+
+	var owner models.User
+	if org.OwnerID == nil {
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "organization has no owner on record"})
+	}
+	if err := database.DB.Where("id = ?", *org.OwnerID).First(&owner).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "owner not found"})
+	}
+
+	// TODO: confirm against OnboardingHandler.Setup whether PlanConfig prices
+	// (documented as kobo) need /100 conversion here — keep this consistent
+	// with however the initial checkout computes its Amount.
+	amountKobo := cfg.MonthlyPrice
+	if req.BillingCycle == "yearly" {
+		amountKobo = cfg.YearlyPrice
+	}
+	amount := float64(amountKobo) / 100.0
+
+	orderRef := fmt.Sprintf("upgrade_%s_%d", orgID.String()[:8], time.Now().Unix())
+
+	result, err := h.Nomba.CreateCheckoutOrder(services.CheckoutOrderInput{
+		OrderReference: orderRef,
+		CustomerEmail:  owner.Email,
+		Amount:         amount,
+		Currency:       "NGN",
+		CallbackURL:    os.Getenv("APP_BASE_URL") + "/payments/nomba/callback",
+		TokenizeCard:   true,
+	})
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to create checkout: " + err.Error()})
+	}
+
+	// Pending row — the webhook will find this by order_reference, mark it
+	// paid, and (see webhook patch below) promote org.Plan once payment clears.
+	newSub := models.Subscription{
+		OrganizationID: orgID,
+		Plan:           req.Plan,
+		Amount:         amount,
+		Currency:       "NGN",
+		OrderReference: orderRef,
+		CheckoutLink:   result.CheckoutLink,
+		Status:         models.SubscriptionStatusPending,
+	}
+	if err := database.DB.Create(&newSub).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to record upgrade order"})
+	}
+
+	return c.JSON(fiber.Map{
+		"checkout_link":   result.CheckoutLink,
+		"order_reference": orderRef,
+	})
+}
+
+// MyHistory returns every subscription row for the logged-in org, most recent
+// first — full billing history (upgrades, renewals, failed charges), not just
+// the latest one MyPlan returns. Paginated via ?page=&limit= (defaults 1/20).
+func (h *SubscriptionHandler) MyHistory(c *fiber.Ctx) error {
+	orgID := middleware.CurrentOrgID(c)
+	if orgID == uuid.Nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "missing organization context"})
+	}
+
+	page := c.QueryInt("page", 1)
+	limit := c.QueryInt("limit", 20)
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 || limit > 100 {
+		limit = 20
+	}
+	offset := (page - 1) * limit
+
+	var subs []models.Subscription
+	var total int64
+
+	database.DB.Model(&models.Subscription{}).
+		Where("organization_id = ?", orgID).
+		Count(&total)
+
+	if err := database.DB.
+		Where("organization_id = ?", orgID).
+		Order("created_at DESC").
+		Limit(limit).
+		Offset(offset).
+		Find(&subs).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to fetch subscription history"})
+	}
+
+	out := make([]fiber.Map, 0, len(subs))
+	for _, s := range subs {
+		out = append(out, fiber.Map{
+			"id":              s.ID,
+			"plan":            s.Plan,
+			"amount":          s.Amount,
+			"currency":        s.Currency,
+			"order_reference": s.OrderReference,
+			"status":          s.Status,
+			"paid_at":         s.PaidAt,
+			"renews_at":       s.RenewsAt,
+			"dunning_stage":   s.DunningStage,
+			"cancelled_at":    s.CancelledAt,
+			"created_at":      s.CreatedAt,
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"history": out,
+		"total":   total,
+		"page":    page,
+		"limit":   limit,
 	})
 }

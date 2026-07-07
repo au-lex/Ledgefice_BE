@@ -23,7 +23,7 @@ func RegisterRoutes(app *fiber.App, jwtSecret string, imgSvc *services.ImageServ
 	onboarding := &handlers.OnboardingHandler{Images: imgSvc, Nomba: nombaSvc}
 	api.Post("/onboarding/setup", onboarding.Setup)
 
-	auth := &handlers.AuthHandler{JWTSecret: jwtSecret, JWTExpiresIn: "24h"}
+	auth := &handlers.AuthHandler{JWTSecret: jwtSecret, JWTExpiresIn: "24h", Images: imgSvc}
 	api.Post("/auth/login", auth.Login)
 
 	// Nomba payment callback (browser redirect) + webhook (server-to-server)
@@ -31,7 +31,6 @@ func RegisterRoutes(app *fiber.App, jwtSecret string, imgSvc *services.ImageServ
 	api.Get("/payments/nomba/callback", payments.NombaCallback)
 	api.Post("/payments/nomba/webhook", payments.NombaWebhook)
 
-	
 	subs := &handlers.SubscriptionHandler{Nomba: nombaSvc}
 	api.Get("/subscriptions/:ref/status", subs.Status)
 
@@ -39,20 +38,23 @@ func RegisterRoutes(app *fiber.App, jwtSecret string, imgSvc *services.ImageServ
 	guard := middleware.Protected(jwtSecret)
 
 	api.Get("/auth/me", guard, auth.Me)
+	api.Put("/auth/me", guard, auth.UpdateMe)
+
+	api.Get("/organizations/me", guard, onboarding.GetMe)
+	api.Put("/organizations/me", guard, onboarding.UpdateMe)
 
 	// Logged-in org's own saved card — lookup + delete. Reg
 	api.Get("/subscriptions/me/token", guard, subs.MyToken)
-	api.Get("/subscriptions/me/token/live", guard, subs.MyLiveToken)
 	api.Delete("/subscriptions/me/token", guard, subs.DeleteMyToken)
+	api.Get("/subscriptions/me/history", guard, subs.MyHistory)
+	api.Get("/subscriptions/me/plan", guard, subs.MyPlan)
+	api.Post("/subscriptions/me/upgrade", guard, subs.Upgrade)
 
-	// order_reference-based lookup — must come AFTER /me/token above.
 	api.Get("/subscriptions/:ref/token", subs.Token)
-
 	// Renew a subscription using its saved tokenized card
 	api.Post("/subscriptions/:id/renew", guard, subs.Renew)
-
 	// List every saved tokenized card across subscriptions — admin/debug view.
-	api.Get("/subscriptions/tokens",  subs.ListTokens)
+	api.Get("/subscriptions/tokens", subs.ListTokens)
 
 	// Direct Debit mandate flow — fallback recurring billing for orgs that paid
 	// via bank_transfer and have no tokenized card to renew against.
@@ -60,7 +62,8 @@ func RegisterRoutes(app *fiber.App, jwtSecret string, imgSvc *services.ImageServ
 	api.Get("/mandates/banks", guard, mandates.ListBanks)
 	api.Post("/mandates/lookup-account", guard, mandates.LookupAccount)
 	api.Post("/mandates", guard, mandates.CreateMandate)
-	api.Get("/mandates/status", guard, mandates.GetMandateStatus)
+	api.Get("/mandates/:mandateId/status", guard, mandates.GetMandateStatus)
+	api.Post("/mandates/reset", guard, mandates.ResetMandate)
 
 	// Users
 	users := &handlers.UserHandler{Email: emailSvc}
@@ -99,7 +102,7 @@ func RegisterRoutes(app *fiber.App, jwtSecret string, imgSvc *services.ImageServ
 	vouchers := &handlers.VoucherHandler{}
 	api.Get("/vouchers", guard, middleware.RequirePermission(models.PermCanViewAll), vouchers.List)
 	api.Get("/vouchers/submitted", guard, middleware.RequirePermission(models.PermCanApprove), vouchers.ListSubmitted)
-    api.Get("/vouchers/my", guard, vouchers.ListMine)
+	api.Get("/vouchers/my", guard, vouchers.ListMine)
 	api.Get("/vouchers/:id", guard, middleware.RequirePermission(models.PermCanViewAll), vouchers.Get)
 	api.Post("/vouchers", guard, middleware.RequirePermission(models.PermCanCreate), vouchers.Create)
 	api.Delete("/vouchers/:id", guard, middleware.RequirePermission(models.PermCanCreate), vouchers.Delete)
@@ -118,8 +121,6 @@ func RegisterRoutes(app *fiber.App, jwtSecret string, imgSvc *services.ImageServ
 	// Audit
 	audit := &handlers.AuditHandler{}
 	api.Get("/audit-logs", guard, middleware.RequirePermission(models.PermCanViewAuditLogs), audit.List)
-
-
 
 	// ─── Admin ────────────────────────────────────────────────────────────────
 	admin := &handlers.AdminHandler{Renewal: renewalSvc, JWTSecret: jwtSecret, JWTExpiresIn: 24 * time.Hour}
